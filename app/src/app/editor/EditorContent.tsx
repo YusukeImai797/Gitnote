@@ -426,38 +426,21 @@ export default function EditorContent() {
       </header>
 
       <main className="mx-auto max-w-2xl px-4 py-6">
-        {/* Labels - Sample style horizontal scrollable chips */}
-        <div className="w-full overflow-x-auto no-scrollbar py-2 mb-4">
-          <div className="flex gap-3 w-max">
-            {/* Selected labels first */}
-            {labels.filter(l => note.tags.includes(l.tag_name)).map((label) => (
-              <button
-                key={label.id}
-                onClick={() => toggleLabel(label.id)}
-                className="group flex h-9 shrink-0 items-center justify-center gap-x-2 rounded-full pl-4 pr-4 shadow-sm hover:shadow-md transition-all active:scale-95 bg-primary/10 border-2 border-primary/50"
-              >
-                <span
-                  className="w-2 h-2 rounded-full"
-                  style={{ backgroundColor: label.color }}
-                />
-                <span className="text-sm font-medium text-primary">
-                  {label.tag_name}
-                </span>
-                <span className="material-symbols-outlined text-primary text-[16px]">close</span>
-              </button>
-            ))}
-            {/* Add Tag button with dropdown */}
-            <div className="relative">
+        {/* Labels section with Add Tag button outside scroll container */}
+        <div className="mb-4">
+          <div className="flex items-center gap-3">
+            {/* Add Tag button with dropdown - OUTSIDE scroll container */}
+            <div className="relative shrink-0">
               <button
                 onClick={() => setShowTagSelector(!showTagSelector)}
-                className="flex h-9 shrink-0 items-center justify-center gap-x-1.5 rounded-full bg-primary/10 pl-3 pr-4 active:scale-95 transition-transform"
+                className="flex h-9 items-center justify-center gap-x-1.5 rounded-full bg-primary/10 pl-3 pr-4 active:scale-95 transition-transform"
               >
                 <span className="material-symbols-outlined text-primary text-[20px]">
                   {showTagSelector ? "close" : "add"}
                 </span>
                 <span className="text-primary text-sm font-bold">Add Tag</span>
               </button>
-              {/* Tag selector dropdown */}
+              {/* Tag selector dropdown - positioned correctly */}
               {showTagSelector && (
                 <>
                   <div className="fixed inset-0 z-40" onClick={() => setShowTagSelector(false)} />
@@ -487,6 +470,28 @@ export default function EditorContent() {
                   </div>
                 </>
               )}
+            </div>
+
+            {/* Scrollable selected labels */}
+            <div className="flex-1 overflow-x-auto no-scrollbar">
+              <div className="flex gap-2 w-max">
+                {labels.filter(l => note.tags.includes(l.tag_name)).map((label) => (
+                  <button
+                    key={label.id}
+                    onClick={() => toggleLabel(label.id)}
+                    className="group flex h-9 shrink-0 items-center justify-center gap-x-2 rounded-full pl-4 pr-3 shadow-sm hover:shadow-md transition-all active:scale-95 bg-primary/10 border-2 border-primary/50"
+                  >
+                    <span
+                      className="w-2 h-2 rounded-full"
+                      style={{ backgroundColor: label.color }}
+                    />
+                    <span className="text-sm font-medium text-primary">
+                      {label.tag_name}
+                    </span>
+                    <span className="material-symbols-outlined text-primary text-[16px]">close</span>
+                  </button>
+                ))}
+              </div>
             </div>
           </div>
         </div>

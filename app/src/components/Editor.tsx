@@ -124,15 +124,17 @@ function InputModal({
   );
 }
 
-// Block menu for adding new blocks (note-style)
-function BlockMenu({
+// Floating Block Menu component (mobile-friendly, appears near cursor)
+function FloatingBlockMenu({
   isOpen,
   onClose,
-  onSelect
+  onSelect,
+  position
 }: {
   isOpen: boolean;
   onClose: () => void;
   onSelect: (type: string) => void;
+  position: { top: number; left: number };
 }) {
   const items = [
     { type: 'heading1', icon: 'H1', label: '大見出し' },
@@ -154,7 +156,10 @@ function BlockMenu({
   return (
     <>
       <div className="fixed inset-0 z-40" onClick={onClose} />
-      <div className="absolute left-0 bottom-full mb-2 bg-card border border-border rounded-xl shadow-lg p-2 min-w-[200px] z-50 max-h-[300px] overflow-y-auto">
+      <div
+        className="fixed bg-card border border-border rounded-xl shadow-xl p-2 min-w-[200px] z-50 max-h-[300px] overflow-y-auto"
+        style={{ top: position.top, left: position.left }}
+      >
         {items.map((item, index) => {
           if (item.type === 'divider') {
             return <div key={index} className="h-px bg-border my-1" />;
@@ -185,10 +190,14 @@ function BlockMenu({
 
 export default function Editor({ content, onChange, placeholder = "Start writing..." }: EditorProps) {
   const [showBlockMenu, setShowBlockMenu] = useState(false);
+  const [showFloatingMenu, setShowFloatingMenu] = useState(false);
+  const [floatingMenuPos, setFloatingMenuPos] = useState({ top: 0, left: 0 });
+  const [floatingButtonPos, setFloatingButtonPos] = useState({ top: 0, visible: false });
   const [showLinkModal, setShowLinkModal] = useState(false);
   const [showImageModal, setShowImageModal] = useState(false);
   const [linkDefaultValue, setLinkDefaultValue] = useState("");
   const blockMenuRef = useRef<HTMLDivElement>(null);
+  const editorContainerRef = useRef<HTMLDivElement>(null);
 
   const editor = useEditor({
     extensions: [
@@ -218,6 +227,13 @@ export default function Editor({ content, onChange, placeholder = "Start writing
       const html = editor.getHTML();
       onChange(html);
     },
+    onSelectionUpdate: ({ editor }) => {
+      // Track cursor position for floating + button
+      updateFloatingButtonPosition();
+    },
+    onFocus: () => {
+      updateFloatingButtonPosition();
+    },
     editorProps: {
       attributes: {
         class: "prose prose-zinc dark:prose-invert max-w-none focus:outline-none min-h-[350px] px-1 py-3",
@@ -225,11 +241,47 @@ export default function Editor({ content, onChange, placeholder = "Start writing
     },
   });
 
+  // Update floating button position based on cursor
+  const updateFloatingButtonPosition = useCallback(() => {
+    if (!editor || !editorContainerRef.current) return;
+
+    const selection = window.getSelection();
+    if (!selection || selection.rangeCount === 0) {
+      setFloatingButtonPos({ top: 0, visible: false });
+      return;
+    }
+
+    const range = selection.getRangeAt(0);
+    const rect = range.getBoundingClientRect();
+    const containerRect = editorContainerRef.current.getBoundingClientRect();
+
+    if (rect.top === 0 && rect.left === 0) {
+      // No valid position
+      setFloatingButtonPos({ top: 0, visible: false });
+      return;
+    }
+
+    // Position button to the left of the current line
+    const topPos = rect.top - containerRect.top + (rect.height / 2) - 16; // Center vertically
+
+    setFloatingButtonPos({
+      top: Math.max(0, topPos),
+      visible: true
+    });
+  }, [editor]);
+
   useEffect(() => {
     if (editor && content !== editor.getHTML()) {
       editor.commands.setContent(content);
     }
   }, [content, editor]);
+
+  // Update position on window resize
+  useEffect(() => {
+    const handleResize = () => updateFloatingButtonPosition();
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, [updateFloatingButtonPosition]);
 
   const openLinkModal = useCallback(() => {
     if (!editor) return;
@@ -253,6 +305,17 @@ export default function Editor({ content, onChange, placeholder = "Start writing
     if (!editor || !url) return;
     editor.chain().focus().setImage({ src: url }).run();
   }, [editor]);
+
+  const handleFloatingPlusClick = useCallback(() => {
+    if (!editorContainerRef.current) return;
+
+    const containerRect = editorContainerRef.current.getBoundingClientRect();
+    setFloatingMenuPos({
+      top: floatingButtonPos.top + containerRect.top + 40,
+      left: containerRect.left + 20
+    });
+    setShowFloatingMenu(true);
+  }, [floatingButtonPos]);
 
   const handleBlockSelect = useCallback((type: string) => {
     if (!editor) return;
@@ -300,9 +363,30 @@ export default function Editor({ content, onChange, placeholder = "Start writing
   }
 
   return (
-    <div className="relative">
+    <div className="relative" ref={editorContainerRef}>
+      {/* Floating + button near cursor (mobile-friendly) */}
+      {floatingButtonPos.visible && !showBlockMenu && !showFloatingMenu && (
+        <button
+          onClick={handleFloatingPlusClick}
+          className="absolute left-0 w-7 h-7 -ml-10 flex items-center justify-center rounded-full bg-primary/20 text-primary hover:bg-primary hover:text-primary-foreground transition-all z-30 opacity-60 hover:opacity-100"
+          style={{ top: floatingButtonPos.top }}
+          title="ブロックを追加"
+          type="button"
+        >
+          <Icon name="add" className="text-lg" />
+        </button>
+      )}
+
       {/* Editor Content */}
       <EditorContent editor={editor} />
+
+      {/* Floating Block Menu (for the floating + button) */}
+      <FloatingBlockMenu
+        isOpen={showFloatingMenu}
+        onClose={() => setShowFloatingMenu(false)}
+        onSelect={handleBlockSelect}
+        position={floatingMenuPos}
+      />
 
       {/* Floating Toolbar - sticky at bottom of editor card */}
       <div className="sticky bottom-0 left-0 right-0 mt-4 py-3 px-2 bg-card/98 backdrop-blur-md border-t border-border -mx-6 -mb-6 rounded-b-2xl">
@@ -317,11 +401,50 @@ export default function Editor({ content, onChange, placeholder = "Start writing
             >
               <Icon name={showBlockMenu ? "close" : "add"} className="text-xl" />
             </button>
-            <BlockMenu
-              isOpen={showBlockMenu}
-              onClose={() => setShowBlockMenu(false)}
-              onSelect={handleBlockSelect}
-            />
+            {/* Block Menu for bottom toolbar */}
+            {showBlockMenu && (
+              <>
+                <div className="fixed inset-0 z-40" onClick={() => setShowBlockMenu(false)} />
+                <div className="absolute left-0 bottom-full mb-2 bg-card border border-border rounded-xl shadow-lg p-2 min-w-[200px] z-50 max-h-[300px] overflow-y-auto">
+                  {[
+                    { type: 'heading1', icon: 'H1', label: '大見出し' },
+                    { type: 'heading2', icon: 'H2', label: '中見出し' },
+                    { type: 'heading3', icon: 'H3', label: '小見出し' },
+                    { type: 'divider' },
+                    { type: 'bulletList', icon: 'format_list_bulleted', label: '箇条書き' },
+                    { type: 'orderedList', icon: 'format_list_numbered', label: '番号リスト' },
+                    { type: 'taskList', icon: 'check_box', label: 'タスクリスト' },
+                    { type: 'divider' },
+                    { type: 'blockquote', icon: 'format_quote', label: '引用' },
+                    { type: 'codeBlock', icon: 'code_blocks', label: 'コードブロック' },
+                    { type: 'horizontalRule', icon: 'horizontal_rule', label: '区切り線' },
+                    { type: 'image', icon: 'image', label: '画像' },
+                  ].map((item, index) => {
+                    if (item.type === 'divider') {
+                      return <div key={index} className="h-px bg-border my-1" />;
+                    }
+                    return (
+                      <button
+                        key={item.type}
+                        onClick={() => {
+                          handleBlockSelect(item.type);
+                          setShowBlockMenu(false);
+                        }}
+                        className="flex items-center gap-3 w-full px-3 py-2 rounded-lg hover:bg-subtle transition-colors text-left"
+                      >
+                        <span className="flex items-center justify-center w-7 h-7 bg-primary text-primary-foreground rounded-md text-xs font-bold">
+                          {item.icon?.startsWith('format_') || item.icon?.startsWith('check_') || item.icon?.startsWith('code_') || item.icon?.startsWith('horizontal_') || item.icon === 'image'
+                            ? <Icon name={item.icon} className="text-base" />
+                            : item.icon
+                          }
+                        </span>
+                        <span className="text-sm font-medium">{item.label}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </>
+            )}
           </div>
 
           <div className="w-px h-6 bg-border shrink-0" />
