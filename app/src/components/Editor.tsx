@@ -43,14 +43,84 @@ function ToolbarButton({
     <button
       onClick={onClick}
       className={`p-2 rounded-lg transition-all active:scale-95 ${isActive
-        ? 'bg-primary/15 text-primary'
-        : 'text-foreground hover:bg-subtle'
+          ? 'bg-primary/15 text-primary'
+          : 'text-foreground hover:bg-subtle'
         }`}
       title={title}
       type="button"
     >
       {children}
     </button>
+  );
+}
+
+// Input Modal for Links and Images
+function InputModal({
+  isOpen,
+  onClose,
+  onSubmit,
+  title,
+  placeholder,
+  defaultValue = ""
+}: {
+  isOpen: boolean;
+  onClose: () => void;
+  onSubmit: (value: string) => void;
+  title: string;
+  placeholder: string;
+  defaultValue?: string;
+}) {
+  const [value, setValue] = useState(defaultValue);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    setValue(defaultValue);
+    if (isOpen && inputRef.current) {
+      setTimeout(() => inputRef.current?.focus(), 100);
+    }
+  }, [isOpen, defaultValue]);
+
+  if (!isOpen) return null;
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    onSubmit(value);
+    setValue("");
+    onClose();
+  };
+
+  return (
+    <>
+      <div className="fixed inset-0 z-50 bg-black/50" onClick={onClose} />
+      <div className="fixed left-1/2 top-1/2 z-50 -translate-x-1/2 -translate-y-1/2 w-full max-w-md p-4">
+        <form onSubmit={handleSubmit} className="bg-card rounded-2xl p-6 shadow-xl border border-border">
+          <h3 className="text-lg font-bold mb-4">{title}</h3>
+          <input
+            ref={inputRef}
+            type="text"
+            value={value}
+            onChange={(e) => setValue(e.target.value)}
+            placeholder={placeholder}
+            className="w-full px-4 py-3 rounded-xl border border-border bg-subtle/50 outline-none focus:ring-2 focus:ring-primary/20 mb-4"
+          />
+          <div className="flex gap-3 justify-end">
+            <button
+              type="button"
+              onClick={onClose}
+              className="px-4 py-2 rounded-lg text-muted-foreground hover:bg-subtle"
+            >
+              キャンセル
+            </button>
+            <button
+              type="submit"
+              className="px-4 py-2 rounded-lg bg-primary text-primary-foreground font-semibold"
+            >
+              追加
+            </button>
+          </div>
+        </form>
+      </div>
+    </>
   );
 }
 
@@ -115,6 +185,9 @@ function BlockMenu({
 
 export default function Editor({ content, onChange, placeholder = "Start writing..." }: EditorProps) {
   const [showBlockMenu, setShowBlockMenu] = useState(false);
+  const [showLinkModal, setShowLinkModal] = useState(false);
+  const [showImageModal, setShowImageModal] = useState(false);
+  const [linkDefaultValue, setLinkDefaultValue] = useState("");
   const blockMenuRef = useRef<HTMLDivElement>(null);
 
   const editor = useEditor({
@@ -158,13 +231,15 @@ export default function Editor({ content, onChange, placeholder = "Start writing
     }
   }, [content, editor]);
 
-  const setLink = useCallback(() => {
+  const openLinkModal = useCallback(() => {
     if (!editor) return;
+    const previousUrl = editor.getAttributes('link').href || "";
+    setLinkDefaultValue(previousUrl);
+    setShowLinkModal(true);
+  }, [editor]);
 
-    const previousUrl = editor.getAttributes('link').href;
-    const url = window.prompt('URL', previousUrl);
-
-    if (url === null) return;
+  const handleLinkSubmit = useCallback((url: string) => {
+    if (!editor) return;
 
     if (url === '') {
       editor.chain().focus().extendMarkRange('link').unsetLink().run();
@@ -174,13 +249,9 @@ export default function Editor({ content, onChange, placeholder = "Start writing
     editor.chain().focus().extendMarkRange('link').setLink({ href: url }).run();
   }, [editor]);
 
-  const addImage = useCallback(() => {
-    if (!editor) return;
-
-    const url = window.prompt('Image URL');
-    if (url) {
-      editor.chain().focus().setImage({ src: url }).run();
-    }
+  const handleImageSubmit = useCallback((url: string) => {
+    if (!editor || !url) return;
+    editor.chain().focus().setImage({ src: url }).run();
   }, [editor]);
 
   const handleBlockSelect = useCallback((type: string) => {
@@ -215,10 +286,10 @@ export default function Editor({ content, onChange, placeholder = "Start writing
         editor.chain().focus().setHorizontalRule().run();
         break;
       case 'image':
-        addImage();
+        setShowImageModal(true);
         break;
     }
-  }, [editor, addImage]);
+  }, [editor]);
 
   if (!editor) {
     return (
@@ -358,14 +429,14 @@ export default function Editor({ content, onChange, placeholder = "Start writing
 
             {/* Other */}
             <ToolbarButton
-              onClick={setLink}
+              onClick={openLinkModal}
               isActive={editor.isActive('link')}
               title="リンク"
             >
               <Icon name="link" />
             </ToolbarButton>
             <ToolbarButton
-              onClick={addImage}
+              onClick={() => setShowImageModal(true)}
               isActive={false}
               title="画像"
             >
@@ -395,6 +466,25 @@ export default function Editor({ content, onChange, placeholder = "Start writing
           </div>
         </div>
       </div>
+
+      {/* Link Modal */}
+      <InputModal
+        isOpen={showLinkModal}
+        onClose={() => setShowLinkModal(false)}
+        onSubmit={handleLinkSubmit}
+        title="リンクを追加"
+        placeholder="https://example.com"
+        defaultValue={linkDefaultValue}
+      />
+
+      {/* Image Modal */}
+      <InputModal
+        isOpen={showImageModal}
+        onClose={() => setShowImageModal(false)}
+        onSubmit={handleImageSubmit}
+        title="画像を追加"
+        placeholder="https://example.com/image.jpg"
+      />
     </div>
   );
 }

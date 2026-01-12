@@ -51,6 +51,7 @@ export default function EditorContent() {
   const [syncStatus, setSyncStatus] = useState<SyncStatus>("idle");
   const [showConflictModal, setShowConflictModal] = useState(false);
   const [remoteContent, setRemoteContent] = useState<string>("");
+  const [showTagSelector, setShowTagSelector] = useState(false);
 
   // Ref to track if content has changed since last sync
   const hasUnsyncedChanges = useRef(false);
@@ -428,32 +429,65 @@ export default function EditorContent() {
         {/* Labels - Sample style horizontal scrollable chips */}
         <div className="w-full overflow-x-auto no-scrollbar py-2 mb-4">
           <div className="flex gap-3 w-max">
-            {/* Add Tag button */}
-            <button className="flex h-9 shrink-0 items-center justify-center gap-x-1.5 rounded-full bg-primary/10 pl-3 pr-4 active:scale-95 transition-transform">
-              <span className="material-symbols-outlined text-primary text-[20px]">add</span>
-              <span className="text-primary text-sm font-bold">Add Tag</span>
-            </button>
-            {labels.map((label) => {
-              const isSelected = note.tags.includes(label.tag_name);
-              return (
-                <button
-                  key={label.id}
-                  onClick={() => toggleLabel(label.id)}
-                  className={`group flex h-9 shrink-0 items-center justify-center gap-x-2 rounded-full pl-4 pr-4 shadow-sm hover:shadow-md transition-all active:scale-95 ${isSelected
-                      ? 'bg-primary/10 border-2 border-primary/50'
-                      : 'bg-card border border-transparent'
-                    }`}
-                >
-                  <span
-                    className="w-2 h-2 rounded-full"
-                    style={{ backgroundColor: label.color }}
-                  />
-                  <span className={`text-sm font-medium transition-colors ${isSelected ? 'text-primary' : 'group-hover:text-primary'}`}>
-                    {label.tag_name}
-                  </span>
-                </button>
-              );
-            })}
+            {/* Selected labels first */}
+            {labels.filter(l => note.tags.includes(l.tag_name)).map((label) => (
+              <button
+                key={label.id}
+                onClick={() => toggleLabel(label.id)}
+                className="group flex h-9 shrink-0 items-center justify-center gap-x-2 rounded-full pl-4 pr-4 shadow-sm hover:shadow-md transition-all active:scale-95 bg-primary/10 border-2 border-primary/50"
+              >
+                <span
+                  className="w-2 h-2 rounded-full"
+                  style={{ backgroundColor: label.color }}
+                />
+                <span className="text-sm font-medium text-primary">
+                  {label.tag_name}
+                </span>
+                <span className="material-symbols-outlined text-primary text-[16px]">close</span>
+              </button>
+            ))}
+            {/* Add Tag button with dropdown */}
+            <div className="relative">
+              <button
+                onClick={() => setShowTagSelector(!showTagSelector)}
+                className="flex h-9 shrink-0 items-center justify-center gap-x-1.5 rounded-full bg-primary/10 pl-3 pr-4 active:scale-95 transition-transform"
+              >
+                <span className="material-symbols-outlined text-primary text-[20px]">
+                  {showTagSelector ? "close" : "add"}
+                </span>
+                <span className="text-primary text-sm font-bold">Add Tag</span>
+              </button>
+              {/* Tag selector dropdown */}
+              {showTagSelector && (
+                <>
+                  <div className="fixed inset-0 z-40" onClick={() => setShowTagSelector(false)} />
+                  <div className="absolute left-0 top-full mt-2 bg-card border border-border rounded-xl shadow-lg p-2 min-w-[200px] z-50 max-h-[300px] overflow-y-auto">
+                    {labels.filter(l => !note.tags.includes(l.tag_name)).length === 0 ? (
+                      <div className="px-3 py-2 text-sm text-muted-foreground">
+                        全てのラベルが選択済みです
+                      </div>
+                    ) : (
+                      labels.filter(l => !note.tags.includes(l.tag_name)).map((label) => (
+                        <button
+                          key={label.id}
+                          onClick={() => {
+                            toggleLabel(label.id);
+                            setShowTagSelector(false);
+                          }}
+                          className="flex items-center gap-3 w-full px-3 py-2 rounded-lg hover:bg-subtle transition-colors text-left"
+                        >
+                          <span
+                            className="w-3 h-3 rounded-full"
+                            style={{ backgroundColor: label.color }}
+                          />
+                          <span className="text-sm font-medium">{label.tag_name}</span>
+                        </button>
+                      ))
+                    )}
+                  </div>
+                </>
+              )}
+            </div>
           </div>
         </div>
 
