@@ -7,7 +7,7 @@ import Link from "@tiptap/extension-link";
 import Image from "@tiptap/extension-image";
 import TaskList from "@tiptap/extension-task-list";
 import TaskItem from "@tiptap/extension-task-item";
-import { useEffect } from "react";
+import { useEffect, useCallback, useState, useRef } from "react";
 
 interface EditorProps {
   content: string;
@@ -15,15 +15,123 @@ interface EditorProps {
   placeholder?: string;
 }
 
+// Icon component for Material Symbols
+function Icon({ name, filled = false, className = "" }: { name: string; filled?: boolean; className?: string }) {
+  return (
+    <span
+      className={`material-symbols-outlined select-none ${className}`}
+      style={{ fontVariationSettings: filled ? "'FILL' 1" : "'FILL' 0" }}
+    >
+      {name}
+    </span>
+  );
+}
+
+// Toolbar button component
+function ToolbarButton({
+  onClick,
+  isActive = false,
+  title,
+  children
+}: {
+  onClick: () => void;
+  isActive?: boolean;
+  title: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      className={`p-2 rounded-lg transition-all active:scale-95 ${isActive
+        ? 'bg-primary/15 text-primary'
+        : 'text-foreground hover:bg-subtle'
+        }`}
+      title={title}
+      type="button"
+    >
+      {children}
+    </button>
+  );
+}
+
+// Block menu for adding new blocks (note-style)
+function BlockMenu({
+  isOpen,
+  onClose,
+  onSelect
+}: {
+  isOpen: boolean;
+  onClose: () => void;
+  onSelect: (type: string) => void;
+}) {
+  const items = [
+    { type: 'heading1', icon: 'H1', label: '大見出し' },
+    { type: 'heading2', icon: 'H2', label: '中見出し' },
+    { type: 'heading3', icon: 'H3', label: '小見出し' },
+    { type: 'divider' },
+    { type: 'bulletList', icon: 'format_list_bulleted', label: '箇条書き' },
+    { type: 'orderedList', icon: 'format_list_numbered', label: '番号リスト' },
+    { type: 'taskList', icon: 'check_box', label: 'タスクリスト' },
+    { type: 'divider' },
+    { type: 'blockquote', icon: 'format_quote', label: '引用' },
+    { type: 'codeBlock', icon: 'code_blocks', label: 'コードブロック' },
+    { type: 'horizontalRule', icon: 'horizontal_rule', label: '区切り線' },
+    { type: 'image', icon: 'image', label: '画像' },
+  ];
+
+  if (!isOpen) return null;
+
+  return (
+    <>
+      <div className="fixed inset-0 z-40" onClick={onClose} />
+      <div className="absolute left-0 bottom-full mb-2 bg-card border border-border rounded-xl shadow-lg p-2 min-w-[200px] z-50 max-h-[300px] overflow-y-auto">
+        {items.map((item, index) => {
+          if (item.type === 'divider') {
+            return <div key={index} className="h-px bg-border my-1" />;
+          }
+          return (
+            <button
+              key={item.type}
+              onClick={() => {
+                onSelect(item.type);
+                onClose();
+              }}
+              className="flex items-center gap-3 w-full px-3 py-2 rounded-lg hover:bg-subtle transition-colors text-left"
+            >
+              <span className="flex items-center justify-center w-7 h-7 bg-primary text-primary-foreground rounded-md text-xs font-bold">
+                {item.icon?.startsWith('format_') || item.icon?.startsWith('check_') || item.icon?.startsWith('code_') || item.icon?.startsWith('horizontal_') || item.icon === 'image'
+                  ? <Icon name={item.icon} className="text-base" />
+                  : item.icon
+                }
+              </span>
+              <span className="text-sm font-medium">{item.label}</span>
+            </button>
+          );
+        })}
+      </div>
+    </>
+  );
+}
+
 export default function Editor({ content, onChange, placeholder = "Start writing..." }: EditorProps) {
+  const [showBlockMenu, setShowBlockMenu] = useState(false);
+  const blockMenuRef = useRef<HTMLDivElement>(null);
+
   const editor = useEditor({
     extensions: [
-      StarterKit,
+      StarterKit.configure({
+        heading: {
+          levels: [1, 2, 3, 4],
+        },
+      }),
       Placeholder.configure({
         placeholder,
       }),
       Link.configure({
         openOnClick: false,
+        HTMLAttributes: {
+          class: 'text-primary underline',
+        },
       }),
       Image,
       TaskList,
@@ -32,86 +140,261 @@ export default function Editor({ content, onChange, placeholder = "Start writing
       }),
     ],
     content,
-    immediatelyRender: false, // Fix SSR hydration mismatch in Next.js
+    immediatelyRender: false,
     onUpdate: ({ editor }) => {
-      const markdown = editor.getText();
-      onChange(markdown);
+      const html = editor.getHTML();
+      onChange(html);
     },
     editorProps: {
       attributes: {
-        class: "prose prose-zinc dark:prose-invert max-w-none focus:outline-none min-h-[400px] px-4 py-3",
+        class: "prose prose-zinc dark:prose-invert max-w-none focus:outline-none min-h-[350px] px-1 py-3",
       },
     },
   });
 
   useEffect(() => {
-    if (editor && content !== editor.getText()) {
+    if (editor && content !== editor.getHTML()) {
       editor.commands.setContent(content);
     }
   }, [content, editor]);
 
+  const setLink = useCallback(() => {
+    if (!editor) return;
+
+    const previousUrl = editor.getAttributes('link').href;
+    const url = window.prompt('URL', previousUrl);
+
+    if (url === null) return;
+
+    if (url === '') {
+      editor.chain().focus().extendMarkRange('link').unsetLink().run();
+      return;
+    }
+
+    editor.chain().focus().extendMarkRange('link').setLink({ href: url }).run();
+  }, [editor]);
+
+  const addImage = useCallback(() => {
+    if (!editor) return;
+
+    const url = window.prompt('Image URL');
+    if (url) {
+      editor.chain().focus().setImage({ src: url }).run();
+    }
+  }, [editor]);
+
+  const handleBlockSelect = useCallback((type: string) => {
+    if (!editor) return;
+
+    switch (type) {
+      case 'heading1':
+        editor.chain().focus().toggleHeading({ level: 1 }).run();
+        break;
+      case 'heading2':
+        editor.chain().focus().toggleHeading({ level: 2 }).run();
+        break;
+      case 'heading3':
+        editor.chain().focus().toggleHeading({ level: 3 }).run();
+        break;
+      case 'bulletList':
+        editor.chain().focus().toggleBulletList().run();
+        break;
+      case 'orderedList':
+        editor.chain().focus().toggleOrderedList().run();
+        break;
+      case 'taskList':
+        editor.chain().focus().toggleTaskList().run();
+        break;
+      case 'blockquote':
+        editor.chain().focus().toggleBlockquote().run();
+        break;
+      case 'codeBlock':
+        editor.chain().focus().toggleCodeBlock().run();
+        break;
+      case 'horizontalRule':
+        editor.chain().focus().setHorizontalRule().run();
+        break;
+      case 'image':
+        addImage();
+        break;
+    }
+  }, [editor, addImage]);
+
   if (!editor) {
-    return null;
+    return (
+      <div className="min-h-[400px] flex items-center justify-center">
+        <div className="animate-pulse text-muted-foreground">Loading editor...</div>
+      </div>
+    );
   }
 
   return (
-    <div className="w-full">
-      <div className="mb-3 flex items-center gap-2 border-b border-zinc-200 dark:border-border pb-2">
-        <button
-          onClick={() => editor.chain().focus().toggleBold().run()}
-          className={`rounded px-2 py-1 text-sm font-medium hover:bg-zinc-100 dark:hover:bg-muted ${editor.isActive("bold") ? "bg-zinc-200 dark:bg-muted" : ""
-            }`}
-          title="Bold"
-        >
-          B
-        </button>
-        <button
-          onClick={() => editor.chain().focus().toggleItalic().run()}
-          className={`rounded px-2 py-1 text-sm font-medium italic hover:bg-zinc-100 ${editor.isActive("italic") ? "bg-zinc-200" : ""
-            }`}
-          title="Italic"
-        >
-          I
-        </button>
-        <button
-          onClick={() => editor.chain().focus().toggleBulletList().run()}
-          className={`rounded px-2 py-1 text-sm hover:bg-zinc-100 ${editor.isActive("bulletList") ? "bg-zinc-200" : ""
-            }`}
-          title="Bullet List"
-        >
-          •
-        </button>
-        <button
-          onClick={() => editor.chain().focus().toggleOrderedList().run()}
-          className={`rounded px-2 py-1 text-sm hover:bg-zinc-100 ${editor.isActive("orderedList") ? "bg-zinc-200" : ""
-            }`}
-          title="Ordered List"
-        >
-          1.
-        </button>
-        <button
-          onClick={() => editor.chain().focus().toggleTaskList().run()}
-          className={`rounded px-2 py-1 text-sm hover:bg-zinc-100 ${editor.isActive("taskList") ? "bg-zinc-200" : ""
-            }`}
-          title="Task List"
-        >
-          ✓
-        </button>
-        <button
-          onClick={() => {
-            const url = window.prompt("Enter URL:");
-            if (url) {
-              editor.chain().focus().setLink({ href: url }).run();
-            }
-          }}
-          className={`rounded px-2 py-1 text-sm hover:bg-zinc-100 ${editor.isActive("link") ? "bg-zinc-200" : ""
-            }`}
-          title="Link"
-        >
-          🔗
-        </button>
-      </div>
+    <div className="relative">
+      {/* Editor Content */}
       <EditorContent editor={editor} />
+
+      {/* Floating Toolbar - sticky at bottom of editor card */}
+      <div className="sticky bottom-0 left-0 right-0 mt-4 py-3 px-2 bg-card/98 backdrop-blur-md border-t border-border -mx-6 -mb-6 rounded-b-2xl">
+        <div className="flex items-center gap-1">
+          {/* Add Block Button (note-style) - outside scroll container */}
+          <div className="relative shrink-0" ref={blockMenuRef}>
+            <button
+              onClick={() => setShowBlockMenu(!showBlockMenu)}
+              className="flex items-center justify-center w-9 h-9 rounded-full bg-primary text-primary-foreground shadow-md shadow-primary/20 hover:scale-105 transition-transform mr-2"
+              title="ブロックを追加"
+              type="button"
+            >
+              <Icon name={showBlockMenu ? "close" : "add"} className="text-xl" />
+            </button>
+            <BlockMenu
+              isOpen={showBlockMenu}
+              onClose={() => setShowBlockMenu(false)}
+              onSelect={handleBlockSelect}
+            />
+          </div>
+
+          <div className="w-px h-6 bg-border shrink-0" />
+
+          {/* Scrollable toolbar area */}
+          <div className="flex items-center gap-1 overflow-x-auto no-scrollbar">
+
+            {/* Text formatting */}
+            <ToolbarButton
+              onClick={() => editor.chain().focus().toggleBold().run()}
+              isActive={editor.isActive('bold')}
+              title="太字 (Ctrl+B)"
+            >
+              <Icon name="format_bold" />
+            </ToolbarButton>
+            <ToolbarButton
+              onClick={() => editor.chain().focus().toggleItalic().run()}
+              isActive={editor.isActive('italic')}
+              title="斜体 (Ctrl+I)"
+            >
+              <Icon name="format_italic" />
+            </ToolbarButton>
+            <ToolbarButton
+              onClick={() => editor.chain().focus().toggleStrike().run()}
+              isActive={editor.isActive('strike')}
+              title="打ち消し線"
+            >
+              <Icon name="format_strikethrough" />
+            </ToolbarButton>
+            <ToolbarButton
+              onClick={() => editor.chain().focus().toggleCode().run()}
+              isActive={editor.isActive('code')}
+              title="インラインコード"
+            >
+              <Icon name="code" />
+            </ToolbarButton>
+
+            <div className="w-px h-6 bg-border mx-1" />
+
+            {/* Headings dropdown */}
+            <div className="relative group">
+              <ToolbarButton
+                onClick={() => { }}
+                isActive={editor.isActive('heading')}
+                title="見出し"
+              >
+                <Icon name="title" />
+              </ToolbarButton>
+              <div className="absolute bottom-full left-0 mb-2 hidden group-hover:block z-50">
+                <div className="bg-card border border-border rounded-xl shadow-lg p-1.5 flex flex-col min-w-[130px]">
+                  <button
+                    onClick={() => editor.chain().focus().toggleHeading({ level: 1 }).run()}
+                    className={`px-3 py-2 text-left rounded-lg hover:bg-subtle text-base font-extrabold transition-colors ${editor.isActive('heading', { level: 1 }) ? 'bg-primary/10 text-primary' : ''}`}
+                  >
+                    H1 大見出し
+                  </button>
+                  <button
+                    onClick={() => editor.chain().focus().toggleHeading({ level: 2 }).run()}
+                    className={`px-3 py-2 text-left rounded-lg hover:bg-subtle text-sm font-bold transition-colors ${editor.isActive('heading', { level: 2 }) ? 'bg-primary/10 text-primary' : ''}`}
+                  >
+                    H2 中見出し
+                  </button>
+                  <button
+                    onClick={() => editor.chain().focus().toggleHeading({ level: 3 }).run()}
+                    className={`px-3 py-2 text-left rounded-lg hover:bg-subtle text-sm font-semibold transition-colors ${editor.isActive('heading', { level: 3 }) ? 'bg-primary/10 text-primary' : ''}`}
+                  >
+                    H3 小見出し
+                  </button>
+                  <button
+                    onClick={() => editor.chain().focus().setParagraph().run()}
+                    className={`px-3 py-2 text-left rounded-lg hover:bg-subtle text-sm transition-colors ${editor.isActive('paragraph') ? 'bg-primary/10 text-primary' : ''}`}
+                  >
+                    本文
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <div className="w-px h-6 bg-border mx-1" />
+
+            {/* Lists */}
+            <ToolbarButton
+              onClick={() => editor.chain().focus().toggleBulletList().run()}
+              isActive={editor.isActive('bulletList')}
+              title="箇条書き"
+            >
+              <Icon name="format_list_bulleted" />
+            </ToolbarButton>
+            <ToolbarButton
+              onClick={() => editor.chain().focus().toggleOrderedList().run()}
+              isActive={editor.isActive('orderedList')}
+              title="番号リスト"
+            >
+              <Icon name="format_list_numbered" />
+            </ToolbarButton>
+            <ToolbarButton
+              onClick={() => editor.chain().focus().toggleTaskList().run()}
+              isActive={editor.isActive('taskList')}
+              title="タスクリスト"
+            >
+              <Icon name="check_box" />
+            </ToolbarButton>
+
+            <div className="w-px h-6 bg-border mx-1" />
+
+            {/* Other */}
+            <ToolbarButton
+              onClick={setLink}
+              isActive={editor.isActive('link')}
+              title="リンク"
+            >
+              <Icon name="link" />
+            </ToolbarButton>
+            <ToolbarButton
+              onClick={addImage}
+              isActive={false}
+              title="画像"
+            >
+              <Icon name="image" />
+            </ToolbarButton>
+            <ToolbarButton
+              onClick={() => editor.chain().focus().toggleBlockquote().run()}
+              isActive={editor.isActive('blockquote')}
+              title="引用"
+            >
+              <Icon name="format_quote" />
+            </ToolbarButton>
+            <ToolbarButton
+              onClick={() => editor.chain().focus().toggleCodeBlock().run()}
+              isActive={editor.isActive('codeBlock')}
+              title="コードブロック"
+            >
+              <Icon name="code_blocks" />
+            </ToolbarButton>
+            <ToolbarButton
+              onClick={() => editor.chain().focus().setHorizontalRule().run()}
+              isActive={false}
+              title="区切り線"
+            >
+              <Icon name="horizontal_rule" />
+            </ToolbarButton>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }

@@ -397,44 +397,76 @@ export default function EditorContent() {
   return (
     <div className="min-h-screen bg-zinc-50 dark:bg-background">
       <header className="border-b border-zinc-200 dark:border-border bg-white dark:bg-card px-4 py-3">
-        <div className="mx-auto flex max-w-4xl items-center justify-between">
+        <div className="mx-auto flex max-w-2xl items-center justify-between">
           <button
-            onClick={() => router.push("/")}
-            className="text-sm text-zinc-600 dark:text-muted-foreground hover:text-zinc-900 dark:hover:text-foreground"
+            onClick={() => router.push("/library")}
+            className="flex size-10 items-center justify-center rounded-full hover:bg-subtle active:scale-95 transition-all"
           >
-            ← Back
+            <span className="material-symbols-outlined">arrow_back_ios_new</span>
           </button>
-          <div className="flex items-center gap-2 text-xs text-zinc-400 dark:text-muted-foreground">
+          <div className="flex items-center gap-2 text-xs text-muted-foreground uppercase tracking-widest">
             {getSyncStatusIcon()}
             <span>
               {syncStatus === "syncing" && "Syncing..."}
               {syncStatus === "synced" && "Synced"}
               {syncStatus === "conflict" && "Conflict"}
-              {syncStatus === "error" && "Sync error"}
-              {syncStatus === "idle" && lastSaved && `Last saved: ${lastSaved.toLocaleTimeString()}`}
+              {syncStatus === "error" && "Error"}
+              {syncStatus === "idle" && "Drafting"}
             </span>
           </div>
           <button
             onClick={handleSaveToGit}
             disabled={saving}
-            className="rounded-lg bg-violet-600 px-4 py-2 text-sm font-semibold text-white hover:bg-violet-700 disabled:opacity-50"
+            className="flex items-center justify-center px-4 py-2 rounded-xl text-primary font-bold hover:bg-primary/10 active:bg-primary/20 transition-colors disabled:opacity-50"
           >
             {saving ? "Saving..." : "Done"}
           </button>
         </div>
       </header>
 
-      <main className="mx-auto max-w-4xl px-4 py-6">
+      <main className="mx-auto max-w-2xl px-4 py-6">
+        {/* Labels - Sample style horizontal scrollable chips */}
+        <div className="w-full overflow-x-auto no-scrollbar py-2 mb-4">
+          <div className="flex gap-3 w-max">
+            {/* Add Tag button */}
+            <button className="flex h-9 shrink-0 items-center justify-center gap-x-1.5 rounded-full bg-primary/10 pl-3 pr-4 active:scale-95 transition-transform">
+              <span className="material-symbols-outlined text-primary text-[20px]">add</span>
+              <span className="text-primary text-sm font-bold">Add Tag</span>
+            </button>
+            {labels.map((label) => {
+              const isSelected = note.tags.includes(label.tag_name);
+              return (
+                <button
+                  key={label.id}
+                  onClick={() => toggleLabel(label.id)}
+                  className={`group flex h-9 shrink-0 items-center justify-center gap-x-2 rounded-full pl-4 pr-4 shadow-sm hover:shadow-md transition-all active:scale-95 ${isSelected
+                      ? 'bg-primary/10 border-2 border-primary/50'
+                      : 'bg-card border border-transparent'
+                    }`}
+                >
+                  <span
+                    className="w-2 h-2 rounded-full"
+                    style={{ backgroundColor: label.color }}
+                  />
+                  <span className={`text-sm font-medium transition-colors ${isSelected ? 'text-primary' : 'group-hover:text-primary'}`}>
+                    {label.tag_name}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
         {/* Folder Selection (only for new notes) */}
         {!note.id && folders.length > 0 && (
           <div className="mb-4">
-            <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-300 mb-2">
+            <label className="block text-sm font-medium text-muted-foreground mb-2">
               保存先フォルダ
             </label>
             <select
               value={selectedFolderId || ""}
               onChange={(e) => setSelectedFolderId(e.target.value || null)}
-              className="w-full max-w-md rounded-lg border border-zinc-300 dark:border-border bg-white dark:bg-card px-3 py-2 text-sm outline-none focus:border-violet-500 dark:focus:border-violet-400"
+              className="w-full max-w-md rounded-xl border border-border bg-card px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-primary/20 transition-shadow"
             >
               {folders.map((folder) => (
                 <option key={folder.id || folder.path} value={folder.id || ""}>
@@ -445,46 +477,19 @@ export default function EditorContent() {
           </div>
         )}
 
-        {/* Labels */}
-        <div className="mb-6">
-          <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-300 mb-2">
-            ラベル
-          </label>
-          <div className="flex flex-wrap gap-2">
-            {labels.map((label) => {
-              const isSelected = note.tags.includes(label.tag_name);
-              return (
-                <button
-                  key={label.id}
-                  onClick={() => toggleLabel(label.id)}
-                  className={`inline-flex items-center gap-2 px-3 py-1 rounded-full text-sm font-medium transition-colors ${isSelected
-                    ? "bg-violet-100 dark:bg-violet-900/30 text-violet-700 dark:text-violet-300 border-2 border-violet-500"
-                    : "bg-zinc-100 dark:bg-muted text-zinc-700 dark:text-zinc-300 border-2 border-transparent hover:bg-zinc-200 dark:hover:bg-zinc-700"
-                    }`}
-                >
-                  <span
-                    className="w-2 h-2 rounded-full"
-                    style={{ backgroundColor: label.color }}
-                  />
-                  {label.tag_name}
-                </button>
-              );
-            })}
-          </div>
-        </div>
-
-        <div className="rounded-lg bg-white dark:bg-card p-6 shadow-sm dark:shadow-lg border border-transparent dark:border-border">
+        {/* Editor Card */}
+        <div className="rounded-2xl bg-card p-6 shadow-sm border border-border">
           <input
             type="text"
             value={note.title}
             onChange={handleTitleChange}
-            placeholder="Note title..."
-            className="mb-4 w-full border-b border-zinc-200 dark:border-border pb-2 text-2xl font-semibold outline-none bg-transparent"
+            placeholder="Give this thought a name..."
+            className="mb-4 w-full border-none pb-3 pt-2 text-[28px] font-bold leading-tight outline-none bg-transparent placeholder:text-muted-foreground/50"
           />
           <Editor
             content={note.content}
             onChange={handleContentChange}
-            placeholder="Start writing your note..."
+            placeholder="Start writing here..."
           />
         </div>
       </main>
