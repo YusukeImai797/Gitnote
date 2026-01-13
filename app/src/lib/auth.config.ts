@@ -21,12 +21,12 @@ export const authOptions: AuthOptions = {
         const { error } = await supabase
           .from('users')
           .upsert({
-            provider: 'github',
-            provider_id: account.providerAccountId,
+            github_user_id: parseInt(account.providerAccountId),
             email: user.email,
             name: user.name,
+            avatar_url: user.image,
           }, {
-            onConflict: 'email'
+            onConflict: 'github_user_id'
           });
 
         if (error) {
