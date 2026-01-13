@@ -17,8 +17,14 @@ export const authOptions: AuthOptions = {
       try {
         const supabase = getServiceSupabase();
 
+        console.log('[AUTH] Attempting to upsert user:', {
+          github_user_id: account.providerAccountId,
+          email: user.email,
+          name: user.name,
+        });
+
         // Upsert user to database
-        const { error } = await supabase
+        const { data, error } = await supabase
           .from('users')
           .upsert({
             github_user_id: parseInt(account.providerAccountId),
@@ -27,16 +33,24 @@ export const authOptions: AuthOptions = {
             avatar_url: user.image,
           }, {
             onConflict: 'github_user_id'
-          });
+          })
+          .select();
 
         if (error) {
-          console.error('Error upserting user:', error);
+          console.error('[AUTH] Error upserting user:', {
+            error,
+            message: error.message,
+            details: error.details,
+            hint: error.hint,
+            code: error.code,
+          });
           return false;
         }
 
+        console.log('[AUTH] User upserted successfully:', data);
         return true;
       } catch (error) {
-        console.error('Unexpected error in signIn callback:', error);
+        console.error('[AUTH] Unexpected error in signIn callback:', error);
         return false;
       }
     },
