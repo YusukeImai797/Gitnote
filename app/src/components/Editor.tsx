@@ -189,6 +189,9 @@ export default function Editor({ content, onChange, placeholder = "Start writing
   const [showLinkModal, setShowLinkModal] = useState(false);
   const [showImageModal, setShowImageModal] = useState(false);
   const [linkDefaultValue, setLinkDefaultValue] = useState("");
+  const [isInList, setIsInList] = useState(false);
+  const [canIndent, setCanIndent] = useState(false);
+  const [canOutdent, setCanOutdent] = useState(false);
   const blockMenuRef = useRef<HTMLDivElement>(null);
   const editorContainerRef = useRef<HTMLDivElement>(null);
 
@@ -223,9 +226,12 @@ export default function Editor({ content, onChange, placeholder = "Start writing
     onSelectionUpdate: ({ editor }) => {
       // Track cursor position for floating + button
       updateFloatingButtonPosition();
+      // Check if cursor is in a list item
+      updateListContext(editor);
     },
-    onFocus: () => {
+    onFocus: ({ editor }) => {
       updateFloatingButtonPosition();
+      updateListContext(editor);
     },
     editorProps: {
       attributes: {
@@ -233,6 +239,28 @@ export default function Editor({ content, onChange, placeholder = "Start writing
       },
     },
   });
+
+  // Check if cursor is in a list and update indent/outdent availability
+  const updateListContext = useCallback((editorInstance: ReturnType<typeof useEditor>) => {
+    if (!editorInstance) return;
+
+    const inList = editorInstance.isActive('bulletList') ||
+                   editorInstance.isActive('orderedList') ||
+                   editorInstance.isActive('taskList');
+    setIsInList(inList);
+
+    if (inList) {
+      // Check if we can indent (sink) - needs to have a previous sibling list item
+      setCanIndent(editorInstance.can().sinkListItem('listItem') ||
+                   editorInstance.can().sinkListItem('taskItem'));
+      // Check if we can outdent (lift) - needs to be nested
+      setCanOutdent(editorInstance.can().liftListItem('listItem') ||
+                    editorInstance.can().liftListItem('taskItem'));
+    } else {
+      setCanIndent(false);
+      setCanOutdent(false);
+    }
+  }, []);
 
   // Update floating button position based on cursor
   const updateFloatingButtonPosition = useCallback(() => {
@@ -406,7 +434,7 @@ export default function Editor({ content, onChange, placeholder = "Start writing
   return (
     <div className="relative" ref={editorContainerRef}>
       {/* Floating + button near cursor (mobile-friendly) */}
-      {floatingButtonPos.visible && !showBlockMenu && !showFloatingMenu && (
+      {floatingButtonPos.visible && !showBlockMenu && !showFloatingMenu && !isInList && (
         <button
           onClick={handleFloatingPlusClick}
           className="absolute left-0 w-7 h-7 -ml-10 flex items-center justify-center rounded-full bg-primary/20 text-primary hover:bg-primary hover:text-primary-foreground transition-all z-30 opacity-60 hover:opacity-100"
@@ -416,6 +444,55 @@ export default function Editor({ content, onChange, placeholder = "Start writing
         >
           <Icon name="add" className="text-lg" />
         </button>
+      )}
+
+      {/* Floating indent controls for list items (mobile-friendly) */}
+      {floatingButtonPos.visible && isInList && !showBlockMenu && !showFloatingMenu && (
+        <div
+          className="absolute left-0 -ml-12 flex flex-col gap-1 z-30"
+          style={{ top: floatingButtonPos.top - 12 }}
+        >
+          {/* Outdent (move left / decrease indent) */}
+          <button
+            onClick={() => {
+              if (editor?.isActive('taskList')) {
+                editor?.chain().focus().liftListItem('taskItem').run();
+              } else {
+                editor?.chain().focus().liftListItem('listItem').run();
+              }
+            }}
+            disabled={!canOutdent}
+            className={`w-8 h-8 flex items-center justify-center rounded-lg transition-all ${
+              canOutdent
+                ? 'bg-primary/20 text-primary hover:bg-primary hover:text-primary-foreground active:scale-95'
+                : 'bg-muted/50 text-muted-foreground/30 cursor-not-allowed'
+            }`}
+            title="インデント減らす (階層を上げる)"
+            type="button"
+          >
+            <Icon name="format_indent_decrease" className="text-base" />
+          </button>
+          {/* Indent (move right / increase indent) */}
+          <button
+            onClick={() => {
+              if (editor?.isActive('taskList')) {
+                editor?.chain().focus().sinkListItem('taskItem').run();
+              } else {
+                editor?.chain().focus().sinkListItem('listItem').run();
+              }
+            }}
+            disabled={!canIndent}
+            className={`w-8 h-8 flex items-center justify-center rounded-lg transition-all ${
+              canIndent
+                ? 'bg-primary/20 text-primary hover:bg-primary hover:text-primary-foreground active:scale-95'
+                : 'bg-muted/50 text-muted-foreground/30 cursor-not-allowed'
+            }`}
+            title="インデント増やす (階層を下げる)"
+            type="button"
+          >
+            <Icon name="format_indent_increase" className="text-base" />
+          </button>
+        </div>
       )}
 
       {/* Editor Content */}
