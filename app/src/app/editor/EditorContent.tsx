@@ -267,6 +267,12 @@ export default function EditorContent() {
       if (document.visibilityState === 'hidden' && hasUnsyncedChanges.current) {
         saveImmediately();
       } else if (document.visibilityState === 'visible' && note.id && isOnline) {
+        // Skip conflict check if modal is already showing (user is resolving conflict)
+        if (showConflictModal) {
+          console.log('[SYNC] Visibility change: Skipping check, conflict modal already open');
+          return;
+        }
+
         // When returning to foreground, check if server has newer content
         try {
           const response = await fetch(`/api/notes/${note.id}`);
@@ -341,7 +347,7 @@ export default function EditorContent() {
       document.removeEventListener('visibilitychange', handleVisibilityChange);
       window.removeEventListener('beforeunload', handleBeforeUnload);
     };
-  }, [note, selectedFolderId, isOnline]);
+  }, [note, selectedFolderId, isOnline, showConflictModal]);
 
   // Save last opened note ID to localStorage
   useEffect(() => {
@@ -864,8 +870,10 @@ export default function EditorContent() {
     if (!note.id) return;
 
     try {
-      // Directly use the already-fetched remoteContent instead of re-fetching
-      // This avoids the comparison logic in loadNote being re-run
+      // Close modal FIRST to prevent re-triggering by visibility changes
+      setShowConflictModal(false);
+
+      // Fetch fresh data from server
       const response = await fetch(`/api/notes/${note.id}`);
       const data = await response.json();
 
@@ -873,15 +881,8 @@ export default function EditorContent() {
         const serverContent = data.content || data.note.content || "";
         const serverUpdatedAt = new Date(data.note.updated_at || 0).getTime();
 
-        // Update state with server content
-        setNote({
-          id: data.note.id,
-          title: data.note.title,
-          content: serverContent,
-          tags: data.note.tags || [],
-        });
-
-        // Update IndexedDB with server content - use saveSyncedNote to avoid false local changes
+        // Update IndexedDB FIRST with server content to prevent conflict re-detection
+        // This ensures handleVisibilityChange sees matching content
         await saveSyncedNote({
           id: note.id,
           title: data.note.title,
@@ -890,14 +891,23 @@ export default function EditorContent() {
           folderPathId: data.note.folder_path_id,
         }, serverUpdatedAt);
 
+        // Then update React state
+        setNote({
+          id: data.note.id,
+          title: data.note.title,
+          content: serverContent,
+          tags: data.note.tags || [],
+        });
+
         hasUnsyncedChanges.current = false;
         setSyncStatus("synced");
-        setShowConflictModal(false);
         toast.success("リモート版に戻しました");
       }
     } catch (error) {
       console.error('Failed to use remote version:', error);
       toast.error("リモート版の取得に失敗しました");
+      // Re-show modal on error so user can retry
+      setShowConflictModal(true);
     }
   };
 

@@ -277,12 +277,26 @@ export default function Editor({ content, onChange, placeholder = "Start writing
       return;
     }
 
-    // Try to get the current node's DOM element
+    // Get the resolved position to find the current block node
     const { $from } = editor.state.selection;
-    const pos = $from.pos;
 
-    // Find the DOM node for the current position
-    const domNode = editor.view.nodeDOM(pos);
+    // Find the start of the current block (paragraph, heading, list item, etc.)
+    const blockStart = $from.start($from.depth);
+
+    // Try to get DOM coordinates for the block start position
+    const coords = editor.view.coordsAtPos(blockStart);
+
+    if (coords) {
+      const topPos = coords.top - containerRect.top;
+      setFloatingButtonPos({
+        top: Math.max(0, topPos),
+        visible: true
+      });
+      return;
+    }
+
+    // Fallback: Try to get the current node's DOM element
+    const domNode = editor.view.nodeDOM($from.pos);
 
     if (domNode instanceof HTMLElement) {
       const nodeRect = domNode.getBoundingClientRect();
@@ -295,7 +309,7 @@ export default function Editor({ content, onChange, placeholder = "Start writing
       return;
     }
 
-    // Fallback: use selection range
+    // Last fallback: use selection range
     const selection = window.getSelection();
     if (!selection || selection.rangeCount === 0) {
       setFloatingButtonPos({
@@ -371,13 +385,15 @@ export default function Editor({ content, onChange, placeholder = "Start writing
     if (!editorContainerRef.current) return;
 
     const containerRect = editorContainerRef.current.getBoundingClientRect();
-    // Position menu below the + button, left-aligned with some offset
-    // Use viewport coordinates since menu uses fixed positioning
+    // Position menu directly below the + button
+    // The + button is positioned at left: -40px (ml-10 = 2.5rem = 40px) from the container
+    const buttonLeft = containerRect.left - 40; // Button's viewport left position
     const menuTop = Math.min(
       containerRect.top + floatingButtonPos.top + 32,
       window.innerHeight - 350 // Keep menu within viewport
     );
-    const menuLeft = Math.max(16, containerRect.left - 8);
+    // Position menu aligned with the button, with some padding from screen edge
+    const menuLeft = Math.max(16, buttonLeft);
 
     setFloatingMenuPos({
       top: menuTop,
@@ -592,11 +608,30 @@ export default function Editor({ content, onChange, placeholder = "Start writing
             {/* Headings dropdown */}
             <div className="relative group">
               <ToolbarButton
-                onClick={() => editor.chain().focus().toggleHeading({ level: 2 }).run()}
+                onClick={() => {
+                  // Cycle through: paragraph -> H1 -> H2 -> H3 -> paragraph
+                  if (editor.isActive('heading', { level: 1 })) {
+                    editor.chain().focus().toggleHeading({ level: 2 }).run();
+                  } else if (editor.isActive('heading', { level: 2 })) {
+                    editor.chain().focus().toggleHeading({ level: 3 }).run();
+                  } else if (editor.isActive('heading', { level: 3 })) {
+                    editor.chain().focus().setParagraph().run();
+                  } else {
+                    editor.chain().focus().toggleHeading({ level: 1 }).run();
+                  }
+                }}
                 isActive={editor.isActive('heading')}
-                title="見出し"
+                title="見出し (クリックで切り替え)"
               >
-                <Icon name="format_h1" />
+                {editor.isActive('heading', { level: 1 }) ? (
+                  <span className="text-sm font-bold">H1</span>
+                ) : editor.isActive('heading', { level: 2 }) ? (
+                  <span className="text-sm font-bold">H2</span>
+                ) : editor.isActive('heading', { level: 3 }) ? (
+                  <span className="text-sm font-bold">H3</span>
+                ) : (
+                  <Icon name="format_h1" />
+                )}
               </ToolbarButton>
               <div className="absolute bottom-full left-0 mb-2 hidden group-hover:block z-50">
                 <div className="bg-card border border-border rounded-xl shadow-lg p-1.5 flex flex-col min-w-[130px]">
