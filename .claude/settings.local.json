@@ -44,7 +44,9 @@
       "Bash(wmic process where \"name like ''%node%''\" get processid,name,commandline)",
       "Skill(frontend-design)",
       "Skill(frontend-design:*)",
-      "Bash(git push)"
+      "Bash(git push)",
+      "Bash(git push:*)",
+      "Bash(npx vercel:*)"
     ]
   }
 }

@@ -191,22 +191,15 @@ export default function EditorContent() {
 
   // Save content before page unload or navigation
   useEffect(() => {
-    // Immediate save function
+    // Immediate save function - prioritizes cloud save for multi-device sync
     const saveImmediately = async () => {
       if (!note.id || (!note.title && !note.content)) return;
 
+      console.log('[SYNC] saveImmediately: Starting...');
       try {
-        // Save to IndexedDB (preserves existing syncedAt)
-        await saveLocalNote({
-          id: note.id,
-          title: note.title,
-          content: note.content,
-          tags: note.tags,
-          folderPathId: selectedFolderId,
-        });
-
-        // Also save to cloud if online
         if (isOnline) {
+          // Save to cloud FIRST for multi-device sync
+          console.log('[SYNC] saveImmediately: Saving to cloud...');
           const response = await fetch(`/api/notes/${note.id}`, {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
@@ -218,16 +211,54 @@ export default function EditorContent() {
             }),
           });
 
-          // If cloud save succeeded, mark as synced with server's updated_at
           if (response.ok) {
             const data = await response.json();
             const serverUpdatedAt = new Date(data.note?.updated_at || Date.now()).getTime();
-            await markNoteSynced(note.id, serverUpdatedAt);
+            console.log('[SYNC] saveImmediately: Cloud save success, serverUpdatedAt:', serverUpdatedAt);
+            // Update local cache with synced state
+            await saveSyncedNote({
+              id: note.id,
+              title: note.title,
+              content: note.content,
+              tags: note.tags,
+              folderPathId: selectedFolderId,
+            }, serverUpdatedAt);
             hasUnsyncedChanges.current = false;
+          } else {
+            console.error('[SYNC] saveImmediately: Cloud save failed, saving to local only');
+            await saveLocalNote({
+              id: note.id,
+              title: note.title,
+              content: note.content,
+              tags: note.tags,
+              folderPathId: selectedFolderId,
+            });
           }
+        } else {
+          // Offline: save to local only
+          console.log('[SYNC] saveImmediately: Offline, saving to local only');
+          await saveLocalNote({
+            id: note.id,
+            title: note.title,
+            content: note.content,
+            tags: note.tags,
+            folderPathId: selectedFolderId,
+          });
         }
       } catch (error) {
-        console.error('Failed to save before navigation:', error);
+        console.error('[SYNC] saveImmediately: Failed:', error);
+        // Fallback: try local save
+        try {
+          await saveLocalNote({
+            id: note.id,
+            title: note.title,
+            content: note.content,
+            tags: note.tags,
+            folderPathId: selectedFolderId,
+          });
+        } catch (localError) {
+          console.error('[SYNC] saveImmediately: Local fallback also failed:', localError);
+        }
       }
     };
 
@@ -889,17 +920,13 @@ export default function EditorContent() {
           {/* Back button */}
           <button
             onClick={async () => {
-              // Save immediately before navigation
+              // Save immediately before navigation - MUST complete before navigating
               if (note.id && (note.title || note.content)) {
+                console.log('[SYNC] Library navigation: Starting save...');
                 try {
-                  await saveLocalNote({
-                    id: note.id,
-                    title: note.title,
-                    content: note.content,
-                    tags: note.tags,
-                    folderPathId: selectedFolderId,
-                  });
                   if (isOnline) {
+                    // Save to cloud FIRST (this is the critical path for multi-device sync)
+                    console.log('[SYNC] Library navigation: Saving to cloud...');
                     const response = await fetch(`/api/notes/${note.id}`, {
                       method: 'PUT',
                       headers: { 'Content-Type': 'application/json' },
@@ -910,17 +937,59 @@ export default function EditorContent() {
                         saveToDbOnly: true,
                       }),
                     });
-                    // Mark as synced with server's updated_at
+
                     if (response.ok) {
                       const data = await response.json();
                       const serverUpdatedAt = new Date(data.note?.updated_at || Date.now()).getTime();
-                      await markNoteSynced(note.id, serverUpdatedAt);
+                      console.log('[SYNC] Library navigation: Cloud save success, serverUpdatedAt:', serverUpdatedAt);
+                      // Update local cache with synced state
+                      await saveSyncedNote({
+                        id: note.id,
+                        title: note.title,
+                        content: note.content,
+                        tags: note.tags,
+                        folderPathId: selectedFolderId,
+                      }, serverUpdatedAt);
+                      hasUnsyncedChanges.current = false;
+                    } else {
+                      console.error('[SYNC] Library navigation: Cloud save failed, status:', response.status);
+                      // Fallback: save to local only
+                      await saveLocalNote({
+                        id: note.id,
+                        title: note.title,
+                        content: note.content,
+                        tags: note.tags,
+                        folderPathId: selectedFolderId,
+                      });
                     }
+                  } else {
+                    // Offline: save to local only
+                    console.log('[SYNC] Library navigation: Offline, saving to local only');
+                    await saveLocalNote({
+                      id: note.id,
+                      title: note.title,
+                      content: note.content,
+                      tags: note.tags,
+                      folderPathId: selectedFolderId,
+                    });
                   }
                 } catch (error) {
-                  console.error('Failed to save before navigation:', error);
+                  console.error('[SYNC] Library navigation: Save failed:', error);
+                  // Last resort: try local save
+                  try {
+                    await saveLocalNote({
+                      id: note.id,
+                      title: note.title,
+                      content: note.content,
+                      tags: note.tags,
+                      folderPathId: selectedFolderId,
+                    });
+                  } catch (localError) {
+                    console.error('[SYNC] Library navigation: Local save also failed:', localError);
+                  }
                 }
               }
+              console.log('[SYNC] Library navigation: Save complete, navigating...');
               router.push("/library");
             }}
             className="flex items-center gap-2 text-muted-foreground hover:text-foreground transition-colors"
