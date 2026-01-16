@@ -3,7 +3,7 @@
 import { SessionProvider } from "next-auth/react";
 import { ThemeProvider } from "next-themes";
 import { Toaster } from "sonner";
-import BottomNav from "@/components/BottomNav";
+import FloatingOrb from "@/components/FloatingOrb";
 
 export default function Providers({ children }: { children: React.ReactNode }) {
   return (
@@ -12,7 +12,7 @@ export default function Providers({ children }: { children: React.ReactNode }) {
         <div className="pb-24">
           {children}
         </div>
-        <BottomNav />
+        <FloatingOrb />
         <Toaster position="top-right" richColors />
       </ThemeProvider>
     </SessionProvider>

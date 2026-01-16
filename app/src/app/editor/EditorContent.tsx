@@ -4,32 +4,28 @@ import { useEffect, useState, useCallback, useRef } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useSession } from "next-auth/react";
 import { toast } from "sonner";
-import Editor from "@/components/Editor";
+import dynamic from "next/dynamic";
+import { SyncStatusDisplay } from "@/components/SyncStatusIcon";
+import { saveLocalNote, getLocalNote, markNoteSynced } from "@/lib/local-db";
+import type { Note, Label, FolderPath, SyncStatus } from "@/types";
 
-interface Note {
-  id?: string;
-  title: string;
-  content: string;
-  tags: string[];
-}
+// Dynamic imports to reduce initial bundle size
+const Editor = dynamic(() => import("@/components/Editor"), {
+  ssr: false,
+  loading: () => (
+    <div className="min-h-[350px] flex items-center justify-center">
+      <div className="animate-pulse text-muted-foreground">Loading editor...</div>
+    </div>
+  ),
+});
 
-interface Label {
-  id: string;
-  tag_name: string;
-  color: string;
-  description: string;
-}
+const KeyboardShortcutsModal = dynamic(() => import("@/components/KeyboardShortcutsModal"), {
+  ssr: false,
+});
 
-interface FolderPath {
-  id: string | null;
-  path: string;
-  alias: string | null;
-  is_default: boolean;
-}
-
-type SyncStatus = "idle" | "syncing" | "synced" | "conflict" | "error";
-
-const AUTOSAVE_DELAY = 30000; // 30 seconds
+const AUTOSAVE_DELAY = 30000; // 30 seconds for Git sync
+const LOCAL_SAVE_DELAY = 1000; // 1 second for IndexedDB
+const CLOUD_SAVE_DELAY = 3000; // 3 seconds for Supabase
 
 export default function EditorContent() {
   const { data: session, status } = useSession();
@@ -45,17 +41,142 @@ export default function EditorContent() {
   const [labels, setLabels] = useState<Label[]>([]);
   const [folders, setFolders] = useState<FolderPath[]>([]);
   const [selectedFolderId, setSelectedFolderId] = useState<string | null>(null);
-  const [saving, setSaving] = useState(false);
+  const [syncing, setSyncing] = useState(false);
   const [loading, setLoading] = useState(false);
   const [lastSaved, setLastSaved] = useState<Date | null>(null);
   const [syncStatus, setSyncStatus] = useState<SyncStatus>("idle");
   const [showConflictModal, setShowConflictModal] = useState(false);
   const [remoteContent, setRemoteContent] = useState<string>("");
   const [showTagSelector, setShowTagSelector] = useState(false);
+  const [showShortcutsModal, setShowShortcutsModal] = useState(false);
+  const [isMovingFolder, setIsMovingFolder] = useState(false);
+  const [isOnline, setIsOnline] = useState(true);
 
   // Ref to track if content has changed since last sync
   const hasUnsyncedChanges = useRef(false);
   const autoSaveTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const localSaveTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const cloudSaveTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const initialFolderIdRef = useRef<string | null>(null);
+  // Refs to prevent infinite loops during init
+  const isCreatingDraft = useRef(false);
+  const isLoadingNote = useRef(false);
+
+  // Online/Offline detection
+  useEffect(() => {
+    const handleOnline = () => {
+      setIsOnline(true);
+      toast.success("オンラインに復帰しました");
+    };
+    const handleOffline = () => {
+      setIsOnline(false);
+      toast.warning("オフラインです。変更はローカルに保存されます");
+    };
+
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+    setIsOnline(navigator.onLine);
+
+    return () => {
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+    };
+  }, []);
+
+  // Keyboard shortcut to show help (?)
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === '?' && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        const target = e.target as HTMLElement;
+        if (target.tagName !== 'INPUT' && target.tagName !== 'TEXTAREA' && !target.isContentEditable) {
+          e.preventDefault();
+          setShowShortcutsModal(true);
+        }
+      }
+      if (e.key === 'Escape') {
+        setShowShortcutsModal(false);
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, []);
+
+  // Save content before page unload or navigation
+  useEffect(() => {
+    // Immediate save function
+    const saveImmediately = async () => {
+      if (!note.id || (!note.title && !note.content)) return;
+
+      try {
+        // Save to IndexedDB with current timestamp
+        await saveLocalNote({
+          id: note.id,
+          title: note.title,
+          content: note.content,
+          tags: note.tags,
+          folderPathId: selectedFolderId,
+          syncedAt: 0, // Will be updated after cloud save succeeds
+        });
+
+        // Also save to cloud if online
+        if (isOnline) {
+          const response = await fetch(`/api/notes/${note.id}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              title: note.title,
+              content: note.content,
+              tags: note.tags,
+              saveToDbOnly: true,
+            }),
+          });
+
+          // If cloud save succeeded, mark as synced with server's updated_at
+          if (response.ok) {
+            const data = await response.json();
+            const serverUpdatedAt = new Date(data.note?.updated_at || Date.now()).getTime();
+            await markNoteSynced(note.id, serverUpdatedAt);
+            hasUnsyncedChanges.current = false;
+          }
+        }
+      } catch (error) {
+        console.error('Failed to save before navigation:', error);
+      }
+    };
+
+    // Handle page visibility change (when switching tabs/apps)
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'hidden' && hasUnsyncedChanges.current) {
+        saveImmediately();
+      }
+    };
+
+    // Handle page unload (when closing or navigating away)
+    const handleBeforeUnload = (e: BeforeUnloadEvent) => {
+      if (hasUnsyncedChanges.current) {
+        saveImmediately();
+        // Show browser's default "unsaved changes" dialog
+        e.preventDefault();
+        e.returnValue = '';
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    window.addEventListener('beforeunload', handleBeforeUnload);
+
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('beforeunload', handleBeforeUnload);
+    };
+  }, [note, selectedFolderId, isOnline]);
+
+  // Save last opened note ID to localStorage
+  useEffect(() => {
+    if (note.id) {
+      localStorage.setItem('lastOpenedNoteId', note.id);
+    }
+  }, [note.id]);
 
   useEffect(() => {
     if (status === "unauthenticated") {
@@ -72,7 +193,6 @@ export default function EditorContent() {
       const data = await response.json();
       if (data.folders) {
         setFolders(data.folders);
-        // Set default folder if available
         const defaultFolder = data.folders.find((f: FolderPath) => f.is_default);
         if (defaultFolder && defaultFolder.id) {
           setSelectedFolderId(defaultFolder.id);
@@ -85,7 +205,6 @@ export default function EditorContent() {
     }
   };
 
-  // Helper to display folder name (alias or truncated path)
   const getFolderDisplayName = (folder: FolderPath): string => {
     if (folder.alias) return folder.alias;
     const parts = folder.path.split('/').filter(Boolean);
@@ -105,83 +224,276 @@ export default function EditorContent() {
     }
   };
 
+  // Initialize note - either load existing or create new draft
   useEffect(() => {
-    if (noteId && status === "authenticated") {
-      loadNote(noteId);
-    } else if (status === "authenticated") {
-      // Load from localStorage on mount
-      const savedNote = localStorage.getItem("draft-note");
-      if (savedNote) {
-        try {
-          const parsed = JSON.parse(savedNote);
-          setNote(parsed);
-        } catch (error) {
-          console.error("Failed to parse saved note:", error);
+    if (status !== "authenticated") return;
+    // Prevent re-triggering during draft creation or note loading
+    if (isCreatingDraft.current || isLoadingNote.current) return;
+
+    const initializeNote = async () => {
+      if (noteId) {
+        // Load existing note - skip if already loaded
+        if (!isLoadingNote.current) {
+          await loadNote(noteId);
+        }
+      } else {
+        // Check for last opened note or create new draft
+        const lastNoteId = localStorage.getItem('lastOpenedNoteId');
+        if (lastNoteId) {
+          // Redirect to last opened note
+          router.replace(`/editor?id=${lastNoteId}`);
+        } else if (!isCreatingDraft.current) {
+          // Create new draft with immediate ID assignment
+          await createNewDraft();
         }
       }
-    }
+    };
+
+    initializeNote();
   }, [noteId, status]);
 
+  const createNewDraft = async () => {
+    // Prevent re-entry
+    if (isCreatingDraft.current) return;
+    isCreatingDraft.current = true;
+
+    try {
+      // Don't send folder_path_id - let API use default folder
+      const response = await fetch('/api/notes/create-draft', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({}),
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to create draft');
+      }
+
+      const data = await response.json();
+      if (data.note) {
+        setNote({
+          id: data.note.id,
+          title: data.note.title || 'Untitled Note',
+          content: data.note.content || '',
+          tags: data.note.tags || [],
+        });
+        setSelectedFolderId(data.note.folder_path_id);
+        initialFolderIdRef.current = data.note.folder_path_id;
+        // Update URL with new note ID
+        router.replace(`/editor?id=${data.note.id}`);
+      }
+    } catch (error) {
+      console.error('Failed to create draft:', error);
+      toast.error('ドラフトの作成に失敗しました');
+    } finally {
+      isCreatingDraft.current = false;
+    }
+  };
+
   const loadNote = async (id: string) => {
+    // Prevent re-entry
+    if (isLoadingNote.current) return;
+    isLoadingNote.current = true;
+
     setLoading(true);
     try {
+      // First check IndexedDB for local changes
+      const localNote = await getLocalNote(id);
+
       const response = await fetch(`/api/notes/${id}`);
       const data = await response.json();
 
       if (data.note) {
+        const serverContent = data.content || data.note.content || "";
+        const serverUpdatedAt = new Date(data.note.updated_at || 0).getTime();
+
+        // Multi-device sync logic:
+        // syncedAt now represents "which server version we last synced to" (server's updated_at)
+        // This allows us to distinguish between:
+        // - Stale cache: syncedAt < serverUpdatedAt (another device updated)
+        // - True local edits: syncedAt >= serverUpdatedAt AND content differs
+        // - True conflict: both have changes (rare)
+
+        let useLocal = false;
+
+        if (localNote) {
+          // Case 1: Cache is stale (another device updated the server)
+          const cacheIsStale = localNote.syncedAt < serverUpdatedAt;
+
+          // Case 2: True local edits (edited on this device after last sync)
+          const hasLocalEdits = localNote.updatedAt > localNote.syncedAt;
+
+          // Compare actual content to detect meaningful differences
+          const contentDiffers = localNote.content !== serverContent;
+
+          if (cacheIsStale && !hasLocalEdits) {
+            // Server is newer, no local edits - use server, update cache
+            useLocal = false;
+            await markNoteSynced(id, serverUpdatedAt);
+          } else if (hasLocalEdits && !cacheIsStale) {
+            // Local has edits, server unchanged - use local
+            useLocal = true;
+          } else if (hasLocalEdits && cacheIsStale) {
+            // True conflict: both have changes
+            if (contentDiffers) {
+              // Show conflict warning, prefer local for now (user can manually sync)
+              toast.warning("他のデバイスで変更がありました。ローカルの変更を保持しています。");
+              useLocal = true;
+            } else {
+              // Content is the same despite timestamp differences - no real conflict
+              useLocal = false;
+              await markNoteSynced(id, serverUpdatedAt);
+            }
+          } else {
+            // No local edits, cache is fresh - use server (normal case)
+            useLocal = false;
+          }
+        }
+
         setNote({
           id: data.note.id,
-          title: data.note.title,
-          content: data.content || "",
-          tags: data.note.tags || [],
+          title: useLocal && localNote ? localNote.title : data.note.title,
+          content: useLocal && localNote ? localNote.content : serverContent,
+          tags: useLocal && localNote ? localNote.tags : (data.note.tags || []),
         });
-        setSyncStatus("synced");
+        setSelectedFolderId(data.note.folder_path_id);
+        initialFolderIdRef.current = data.note.folder_path_id;
+        setSyncStatus(useLocal ? "idle" : "synced");
+
+        if (useLocal && localNote) {
+          hasUnsyncedChanges.current = true;
+          toast.info("ローカルの変更を復元しました");
+        }
+      } else {
+        // Note not found (may have been deleted)
+        localStorage.removeItem('lastOpenedNoteId');
+        toast.warning("ノートが見つかりませんでした。新規作成します。");
+        await createNewDraft();
       }
     } catch (error) {
       console.error("Failed to load note:", error);
-      toast.error("Failed to load note");
+      // Clear localStorage and create new draft on error
+      localStorage.removeItem('lastOpenedNoteId');
+      toast.error("ノートの読み込みに失敗しました");
+      await createNewDraft();
     } finally {
       setLoading(false);
+      isLoadingNote.current = false;
     }
   };
 
-  // Save to localStorage with 1 second debounce
-  const saveToLocalStorage = useCallback(() => {
-    localStorage.setItem("draft-note", JSON.stringify(note));
-    setLastSaved(new Date());
-  }, [note]);
+  // Save to IndexedDB with 1 second debounce
+  const saveToLocal = useCallback(async () => {
+    if (!note.id) return;
 
-  useEffect(() => {
-    const timer = setTimeout(() => {
-      if (note.title || note.content) {
-        saveToLocalStorage();
+    try {
+      await saveLocalNote({
+        id: note.id,
+        title: note.title,
+        content: note.content,
+        tags: note.tags,
+        folderPathId: selectedFolderId,
+        syncedAt: 0, // Will be updated when synced to cloud
+      });
+    } catch (error) {
+      console.error("Failed to save to IndexedDB:", error);
+    }
+  }, [note, selectedFolderId]);
+
+  // Save to Supabase with 3 second debounce
+  const saveToCloud = useCallback(async () => {
+    if (!note.id || !isOnline) return;
+
+    try {
+      const response = await fetch(`/api/notes/${note.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          title: note.title,
+          content: note.content,
+          tags: note.tags,
+          saveToDbOnly: true, // Only save to Supabase, not GitHub
+        }),
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        setLastSaved(new Date());
+        // Use server's updated_at to track which version we've synced to
+        const serverUpdatedAt = new Date(data.note?.updated_at || Date.now()).getTime();
+        await markNoteSynced(note.id, serverUpdatedAt);
       }
-    }, 1000);
+    } catch (error) {
+      console.error("Failed to save to cloud:", error);
+    }
+  }, [note, isOnline]);
 
-    return () => clearTimeout(timer);
-  }, [note, saveToLocalStorage]);
+  // Local save effect (1 second debounce)
+  useEffect(() => {
+    if (localSaveTimerRef.current) {
+      clearTimeout(localSaveTimerRef.current);
+    }
+
+    if (note.id && (note.title || note.content)) {
+      localSaveTimerRef.current = setTimeout(saveToLocal, LOCAL_SAVE_DELAY);
+    }
+
+    return () => {
+      if (localSaveTimerRef.current) {
+        clearTimeout(localSaveTimerRef.current);
+      }
+    };
+  }, [note, saveToLocal]);
+
+  // Cloud save effect (3 second debounce)
+  useEffect(() => {
+    if (cloudSaveTimerRef.current) {
+      clearTimeout(cloudSaveTimerRef.current);
+    }
+
+    if (note.id && (note.title || note.content) && isOnline) {
+      cloudSaveTimerRef.current = setTimeout(saveToCloud, CLOUD_SAVE_DELAY);
+    }
+
+    return () => {
+      if (cloudSaveTimerRef.current) {
+        clearTimeout(cloudSaveTimerRef.current);
+      }
+    };
+  }, [note, saveToCloud, isOnline]);
 
   // Sync to Git function
   const syncToGit = useCallback(async () => {
-    if (!note.id || !note.title || !hasUnsyncedChanges.current) {
+    if (!note.id || !note.title) {
+      if (!note.title) {
+        toast.error("タイトルを入力してください");
+      }
       return;
     }
 
+    if (!isOnline) {
+      toast.error("オフラインのため同期できません");
+      return;
+    }
+
+    setSyncing(true);
     setSyncStatus("syncing");
     try {
       const response = await fetch(`/api/notes/${note.id}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(note),
+        body: JSON.stringify({
+          ...note,
+          folder_path_id: selectedFolderId,
+        }),
       });
 
       if (response.status === 409) {
-        // Conflict detected
         const data = await response.json();
         setSyncStatus("conflict");
         setRemoteContent(data.remoteContent || "");
         setShowConflictModal(true);
-        toast.error("Conflict detected! Please resolve the conflict.");
+        toast.error("コンフリクトが検出されました");
         return;
       }
 
@@ -192,34 +504,33 @@ export default function EditorContent() {
       const data = await response.json();
       hasUnsyncedChanges.current = false;
       setSyncStatus("synced");
-      toast.success("Synced to Git");
-
-      // Update note with new SHA
-      if (data.note) {
-        setNote(prev => ({ ...prev, id: data.note.id }));
-      }
+      // Use server's updated_at to track which version we've synced to
+      const serverUpdatedAt = new Date(data.note?.updated_at || Date.now()).getTime();
+      await markNoteSynced(note.id, serverUpdatedAt);
+      toast.success("同期しました");
     } catch (error) {
       console.error("Error syncing to Git:", error);
       setSyncStatus("error");
-      toast.error("Failed to sync to Git");
+      toast.error("同期に失敗しました");
+    } finally {
+      setSyncing(false);
     }
-  }, [note]);
+  }, [note, selectedFolderId, isOnline]);
 
-  // 30-second auto-save timer
+  // 30-second auto-save timer for Git sync
   useEffect(() => {
-    // Only start timer for existing notes with unsaved changes
-    if (!note.id || !hasUnsyncedChanges.current) {
+    if (!hasUnsyncedChanges.current || !note.id || (!note.title && !note.content) || !isOnline) {
       return;
     }
 
-    // Clear existing timer
     if (autoSaveTimerRef.current) {
       clearTimeout(autoSaveTimerRef.current);
     }
 
-    // Set new timer
     autoSaveTimerRef.current = setTimeout(() => {
-      syncToGit();
+      if (note.title) {
+        syncToGit();
+      }
     }, AUTOSAVE_DELAY);
 
     return () => {
@@ -227,7 +538,38 @@ export default function EditorContent() {
         clearTimeout(autoSaveTimerRef.current);
       }
     };
-  }, [note.content, note.title, note.tags, note.id, syncToGit]);
+  }, [note.content, note.title, note.tags, note.id, syncToGit, isOnline]);
+
+  // Handle folder change - move file on GitHub
+  const handleFolderChange = async (newFolderId: string) => {
+    if (!note.id || newFolderId === selectedFolderId) return;
+
+    const targetFolder = folders.find(f => f.id === newFolderId);
+    if (!targetFolder) return;
+
+    setIsMovingFolder(true);
+    toast.loading(`${getFolderDisplayName(targetFolder)} に移動中...`, { id: 'folder-move' });
+
+    try {
+      const response = await fetch(`/api/notes/${note.id}/move`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ folder_path_id: newFolderId }),
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to move note');
+      }
+
+      setSelectedFolderId(newFolderId);
+      toast.success(`${getFolderDisplayName(targetFolder)} に移動しました`, { id: 'folder-move' });
+    } catch (error) {
+      console.error('Failed to move note:', error);
+      toast.error('フォルダの移動に失敗しました', { id: 'folder-move' });
+    } finally {
+      setIsMovingFolder(false);
+    }
+  };
 
   const handleContentChange = (content: string) => {
     setNote((prev) => ({ ...prev, content }));
@@ -261,63 +603,6 @@ export default function EditorContent() {
     hasUnsyncedChanges.current = true;
   };
 
-  const handleSaveToGit = async () => {
-    if (!note.title) {
-      toast.error("Please enter a title");
-      return;
-    }
-
-    setSaving(true);
-    setSyncStatus("syncing");
-    try {
-      let response;
-
-      if (note.id) {
-        // Update existing note
-        response = await fetch(`/api/notes/${note.id}`, {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(note),
-        });
-      } else {
-        // Create new note
-        response = await fetch("/api/notes", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            ...note,
-            folder_path_id: selectedFolderId,
-          }),
-        });
-      }
-
-      if (response.status === 409) {
-        const data = await response.json();
-        setSyncStatus("conflict");
-        setRemoteContent(data.remoteContent || "");
-        setShowConflictModal(true);
-        toast.error("Conflict detected! Please resolve the conflict.");
-        return;
-      }
-
-      if (!response.ok) {
-        throw new Error("Failed to save note");
-      }
-
-      hasUnsyncedChanges.current = false;
-      setSyncStatus("synced");
-      toast.success("Note saved to Git!");
-      localStorage.removeItem("draft-note");
-      router.push("/library");
-    } catch (error) {
-      console.error("Error saving note:", error);
-      setSyncStatus("error");
-      toast.error("Failed to save note");
-    } finally {
-      setSaving(false);
-    }
-  };
-
   // Handle conflict resolution
   const handleForceOverwrite = async () => {
     if (!note.id) return;
@@ -337,11 +622,11 @@ export default function EditorContent() {
       hasUnsyncedChanges.current = false;
       setSyncStatus("synced");
       setShowConflictModal(false);
-      toast.success("Note successfully overwritten");
+      toast.success("上書きしました");
     } catch (error) {
       console.error("Error force overwriting:", error);
       setSyncStatus("error");
-      toast.error("Failed to overwrite");
+      toast.error("上書きに失敗しました");
     }
   };
 
@@ -352,99 +637,118 @@ export default function EditorContent() {
     hasUnsyncedChanges.current = false;
     setSyncStatus("synced");
     setShowConflictModal(false);
-    toast.success("Reverted to remote version");
-  };
-
-  const getSyncStatusIcon = () => {
-    switch (syncStatus) {
-      case "syncing":
-        return (
-          <svg className="h-4 w-4 animate-spin text-violet-500" fill="none" viewBox="0 0 24 24">
-            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
-          </svg>
-        );
-      case "synced":
-        return (
-          <svg className="h-4 w-4 text-green-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-          </svg>
-        );
-      case "conflict":
-        return (
-          <svg className="h-4 w-4 text-red-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
-          </svg>
-        );
-      case "error":
-        return (
-          <svg className="h-4 w-4 text-red-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-          </svg>
-        );
-      default:
-        return null;
-    }
+    toast.success("リモート版に戻しました");
   };
 
   if (status === "loading" || loading) {
     return (
-      <div className="flex min-h-screen items-center justify-center">
-        <div>Loading...</div>
+      <div className="flex min-h-screen items-center justify-center bg-background bg-paper">
+        <div className="flex flex-col items-center gap-3">
+          <div className="size-8 border-2 border-primary/30 border-t-primary rounded-full animate-spin" />
+          <span className="text-sm text-muted-foreground">Loading...</span>
+        </div>
       </div>
     );
   }
 
   return (
-    <div className="min-h-screen bg-zinc-50 dark:bg-background">
-      <header className="border-b border-zinc-200 dark:border-border bg-white dark:bg-card px-4 py-3">
-        <div className="mx-auto flex max-w-2xl items-center justify-between">
+    <div className="min-h-screen bg-background bg-paper">
+      {/* Minimal Header */}
+      <header className="sticky top-0 z-20 px-4 py-3 bg-background/80 backdrop-blur-md border-b border-border/50">
+        <div className="mx-auto flex max-w-3xl items-center justify-between">
+          {/* Back button */}
           <button
-            onClick={() => router.push("/library")}
-            className="flex size-10 items-center justify-center rounded-full hover:bg-subtle active:scale-95 transition-all"
+            onClick={async () => {
+              // Save immediately before navigation
+              if (note.id && (note.title || note.content)) {
+                try {
+                  await saveLocalNote({
+                    id: note.id,
+                    title: note.title,
+                    content: note.content,
+                    tags: note.tags,
+                    folderPathId: selectedFolderId,
+                    syncedAt: 0,
+                  });
+                  if (isOnline) {
+                    const response = await fetch(`/api/notes/${note.id}`, {
+                      method: 'PUT',
+                      headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify({
+                        title: note.title,
+                        content: note.content,
+                        tags: note.tags,
+                        saveToDbOnly: true,
+                      }),
+                    });
+                    // Mark as synced with server's updated_at
+                    if (response.ok) {
+                      const data = await response.json();
+                      const serverUpdatedAt = new Date(data.note?.updated_at || Date.now()).getTime();
+                      await markNoteSynced(note.id, serverUpdatedAt);
+                    }
+                  }
+                } catch (error) {
+                  console.error('Failed to save before navigation:', error);
+                }
+              }
+              router.push("/library");
+            }}
+            className="flex items-center gap-2 text-muted-foreground hover:text-foreground transition-colors"
           >
-            <span className="material-symbols-outlined">arrow_back_ios_new</span>
+            <span className="material-symbols-outlined text-[20px]">arrow_back</span>
+            <span className="text-sm font-medium">Library</span>
           </button>
-          <div className="flex items-center gap-2 text-xs text-muted-foreground uppercase tracking-widest">
-            {getSyncStatusIcon()}
-            <span>
-              {syncStatus === "syncing" && "Syncing..."}
-              {syncStatus === "synced" && "Synced"}
-              {syncStatus === "conflict" && "Conflict"}
-              {syncStatus === "error" && "Error"}
-              {syncStatus === "idle" && "Drafting"}
-            </span>
+
+          {/* Center: Sync status */}
+          <div className="flex items-center gap-3">
+            <SyncStatusDisplay status={syncStatus} lastSaved={lastSaved} />
+            {!isOnline && (
+              <span className="text-xs text-warning font-medium px-2 py-0.5 bg-warning/10 rounded-full">オフライン</span>
+            )}
           </div>
-          <button
-            onClick={handleSaveToGit}
-            disabled={saving}
-            className="flex items-center justify-center px-4 py-2 rounded-xl text-primary font-bold hover:bg-primary/10 active:bg-primary/20 transition-colors disabled:opacity-50"
-          >
-            {saving ? "Saving..." : "Done"}
-          </button>
+
+          {/* Right actions */}
+          <div className="flex items-center gap-1">
+            <button
+              onClick={() => setShowShortcutsModal(true)}
+              className="flex size-9 items-center justify-center rounded-full text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-all"
+              title="キーボードショートカット (?)"
+            >
+              <span className="material-symbols-outlined text-[20px]">help_outline</span>
+            </button>
+            <button
+              onClick={syncToGit}
+              disabled={syncing || !isOnline}
+              className="flex items-center justify-center gap-1.5 px-4 py-2 rounded-full bg-primary text-primary-foreground font-medium text-sm hover:opacity-90 active:scale-95 transition-all disabled:opacity-50"
+            >
+              <span className="material-symbols-outlined text-[18px]">cloud_upload</span>
+              {syncing ? "Syncing..." : "Sync"}
+            </button>
+          </div>
         </div>
       </header>
 
-      <main className="mx-auto max-w-2xl px-4 py-6">
+      <main className="mx-auto max-w-3xl px-4 md:px-6 py-8 pb-32 animate-fade-in">
         {/* Labels section with Add Tag button outside scroll container */}
-        <div className="mb-4">
+        <div className="mb-6">
           <div className="flex items-center gap-3">
             {/* Add Tag button with dropdown - OUTSIDE scroll container */}
             <div className="relative shrink-0">
               <button
                 onClick={() => setShowTagSelector(!showTagSelector)}
-                className="flex h-9 items-center justify-center gap-x-1.5 rounded-full bg-primary/10 pl-3 pr-4 active:scale-95 transition-transform"
+                className="flex h-8 items-center justify-center gap-x-1 rounded-full bg-muted hover:bg-muted/80 pl-2.5 pr-3 active:scale-95 transition-all"
               >
-                <span className="material-symbols-outlined text-primary text-[20px]">
+                <span className="material-symbols-outlined text-muted-foreground text-[18px]">
                   {showTagSelector ? "close" : "add"}
                 </span>
-                <span className="text-primary text-sm font-bold">Add Tag</span>
+                <span className="text-muted-foreground text-sm font-medium">Tag</span>
               </button>
               {/* Tag selector dropdown - positioned correctly */}
               {showTagSelector && (
                 <>
                   <div className="fixed inset-0 z-40" onClick={() => setShowTagSelector(false)} />
-                  <div className="absolute left-0 top-full mt-2 bg-card border border-border rounded-xl shadow-lg p-2 min-w-[200px] z-50 max-h-[300px] overflow-y-auto">
+                  <div className="absolute left-0 top-full mt-2 bg-card border border-border rounded-2xl shadow-lg p-2 min-w-[220px] z-50 max-h-[300px] overflow-y-auto animate-slide-up">
                     {labels.filter(l => !note.tags.includes(l.tag_name)).length === 0 ? (
                       <div className="px-3 py-2 text-sm text-muted-foreground">
                         全てのラベルが選択済みです
@@ -457,10 +761,10 @@ export default function EditorContent() {
                             toggleLabel(label.id);
                             setShowTagSelector(false);
                           }}
-                          className="flex items-center gap-3 w-full px-3 py-2 rounded-lg hover:bg-subtle transition-colors text-left"
+                          className="flex items-center gap-3 w-full px-3 py-2.5 rounded-xl hover:bg-muted transition-colors text-left"
                         >
                           <span
-                            className="w-3 h-3 rounded-full"
+                            className="w-3 h-3 rounded-full ring-2 ring-white/50"
                             style={{ backgroundColor: label.color }}
                           />
                           <span className="text-sm font-medium">{label.tag_name}</span>
@@ -479,16 +783,25 @@ export default function EditorContent() {
                   <button
                     key={label.id}
                     onClick={() => toggleLabel(label.id)}
-                    className="group flex h-9 shrink-0 items-center justify-center gap-x-2 rounded-full pl-4 pr-3 shadow-sm hover:shadow-md transition-all active:scale-95 bg-primary/10 border-2 border-primary/50"
+                    className="group flex h-8 shrink-0 items-center justify-center gap-x-2 rounded-full pl-3 pr-2.5 transition-all active:scale-95 hover:shadow-md"
+                    style={{
+                      backgroundColor: `${label.color}15`,
+                      border: `1.5px solid ${label.color}40`
+                    }}
                   >
                     <span
                       className="w-2 h-2 rounded-full"
                       style={{ backgroundColor: label.color }}
                     />
-                    <span className="text-sm font-medium text-primary">
+                    <span className="text-sm font-medium" style={{ color: label.color }}>
                       {label.tag_name}
                     </span>
-                    <span className="material-symbols-outlined text-primary text-[16px]">close</span>
+                    <span
+                      className="material-symbols-outlined text-[14px] opacity-60 group-hover:opacity-100 transition-opacity"
+                      style={{ color: label.color }}
+                    >
+                      close
+                    </span>
                   </button>
                 ))}
               </div>
@@ -496,16 +809,15 @@ export default function EditorContent() {
           </div>
         </div>
 
-        {/* Folder Selection (only for new notes) */}
-        {!note.id && folders.length > 0 && (
-          <div className="mb-4">
-            <label className="block text-sm font-medium text-muted-foreground mb-2">
-              保存先フォルダ
-            </label>
+        {/* Folder Selection - compact inline style */}
+        {folders.length > 0 && (
+          <div className="mb-8 flex items-center gap-2">
+            <span className="material-symbols-outlined text-muted-foreground text-[18px]">folder</span>
             <select
               value={selectedFolderId || ""}
-              onChange={(e) => setSelectedFolderId(e.target.value || null)}
-              className="w-full max-w-md rounded-xl border border-border bg-card px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-primary/20 transition-shadow"
+              onChange={(e) => handleFolderChange(e.target.value)}
+              disabled={isMovingFolder}
+              className="rounded-lg border-none bg-transparent text-sm text-muted-foreground outline-none cursor-pointer hover:text-foreground transition-colors disabled:opacity-50"
             >
               {folders.map((folder) => (
                 <option key={folder.id || folder.path} value={folder.id || ""}>
@@ -516,59 +828,72 @@ export default function EditorContent() {
           </div>
         )}
 
-        {/* Editor Card */}
-        <div className="rounded-2xl bg-card p-6 shadow-sm border border-border">
+        {/* Editor Card - clean minimal design */}
+        <div className="rounded-2xl bg-card p-6 md:p-8 shadow-sm border border-border/50 animate-slide-up">
+          {/* Title input with display font */}
           <input
             type="text"
             value={note.title}
             onChange={handleTitleChange}
-            placeholder="Give this thought a name..."
-            className="mb-4 w-full border-none pb-3 pt-2 text-[28px] font-bold leading-tight outline-none bg-transparent placeholder:text-muted-foreground/50"
+            placeholder="Untitled"
+            className="mb-6 w-full border-none pb-3 text-3xl md:text-4xl font-bold leading-tight tracking-tight outline-none bg-transparent placeholder:text-muted-foreground/40 placeholder:italic"
+            style={{ fontFamily: 'var(--font-display)' }}
           />
+
+          {/* Divider */}
+          <div className="h-px bg-gradient-to-r from-transparent via-border to-transparent mb-6" />
+
+          {/* Editor */}
           <Editor
             content={note.content}
             onChange={handleContentChange}
-            placeholder="Start writing here..."
+            placeholder="Start writing..."
           />
         </div>
       </main>
 
       {/* Conflict Resolution Modal */}
       {showConflictModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
-          <div className="mx-4 w-full max-w-lg rounded-lg bg-white dark:bg-card p-6 shadow-xl border border-transparent dark:border-border">
-            <div className="mb-4 flex items-center gap-2 text-red-600 dark:text-red-400">
-              <svg className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
-              </svg>
-              <h2 className="text-lg font-semibold">Conflict Detected</h2>
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+          <div className="w-full max-w-md rounded-2xl bg-card p-6 shadow-xl border border-border animate-slide-up">
+            <div className="mb-4 flex items-center gap-3 text-error">
+              <div className="flex size-10 items-center justify-center rounded-full bg-error/10">
+                <span className="material-symbols-outlined text-error">warning</span>
+              </div>
+              <h2 className="text-lg font-semibold">コンフリクトが検出されました</h2>
             </div>
-            <p className="mb-6 text-sm text-zinc-600 dark:text-muted-foreground">
-              This note has been modified in GitHub since you last synced. Choose how to resolve the conflict:
+            <p className="mb-6 text-sm text-muted-foreground leading-relaxed">
+              このノートは最後の同期以降にGitHub上で変更されています。どちらのバージョンを使用しますか？
             </p>
             <div className="flex flex-col gap-3">
               <button
                 onClick={handleForceOverwrite}
-                className="w-full rounded-lg bg-violet-600 px-4 py-2 text-sm font-semibold text-white hover:bg-violet-700"
+                className="w-full rounded-xl bg-primary px-4 py-3 text-sm font-semibold text-primary-foreground hover:opacity-90 active:scale-[0.98] transition-all"
               >
-                Use my version (overwrite remote)
+                自分のバージョンを使用（リモートを上書き）
               </button>
               <button
                 onClick={handleUseRemote}
-                className="w-full rounded-lg border border-zinc-300 dark:border-border px-4 py-2 text-sm font-semibold hover:bg-zinc-100 dark:hover:bg-muted"
+                className="w-full rounded-xl border border-border px-4 py-3 text-sm font-semibold hover:bg-muted active:scale-[0.98] transition-all"
               >
-                Use remote version (discard my changes)
+                リモートバージョンを使用（自分の変更を破棄）
               </button>
               <button
                 onClick={() => setShowConflictModal(false)}
-                className="w-full rounded-lg px-4 py-2 text-sm text-zinc-500 dark:text-muted-foreground hover:text-zinc-700 dark:hover:text-foreground"
+                className="w-full rounded-xl px-4 py-3 text-sm text-muted-foreground hover:text-foreground transition-colors"
               >
-                Cancel
+                キャンセル
               </button>
             </div>
           </div>
         </div>
       )}
+
+      {/* Keyboard Shortcuts Modal */}
+      <KeyboardShortcutsModal
+        isOpen={showShortcutsModal}
+        onClose={() => setShowShortcutsModal(false)}
+      />
     </div>
   );
 }

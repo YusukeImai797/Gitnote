@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useSession, signOut } from "next-auth/react";
 import { toast } from "sonner";
+import ThemeToggle from "@/components/ThemeToggle";
 
 interface RepoConnection {
   connected: boolean;
@@ -150,61 +151,83 @@ export default function SettingsPage() {
 
   if (status === "loading" || loading) {
     return (
-      <div className="flex min-h-screen items-center justify-center">
-        <div>Loading...</div>
+      <div className="flex min-h-screen items-center justify-center bg-background bg-paper">
+        <div className="text-muted-foreground">Loading...</div>
       </div>
     );
   }
 
   return (
-    <div className="min-h-screen bg-zinc-50 dark:bg-background">
-      <header className="border-b border-zinc-200 dark:border-border bg-white dark:bg-card px-4 py-3">
-        <div className="mx-auto flex max-w-4xl items-center justify-between">
-          <h1 className="text-xl font-semibold">Settings</h1>
+    <div className="min-h-screen bg-background bg-paper">
+      <header className="sticky top-0 z-20 bg-background/80 backdrop-blur-md border-b border-border/50 px-4 py-4">
+        <div className="mx-auto max-w-2xl flex items-center justify-between">
+          <h1 className="text-2xl md:text-3xl font-bold" style={{ fontFamily: 'var(--font-display)' }}>
+            Settings
+          </h1>
           <button
             onClick={() => router.push("/")}
-            className="rounded-lg border border-zinc-200 dark:border-border px-4 py-2 text-sm font-semibold hover:bg-zinc-100 dark:hover:bg-muted"
+            className="px-4 py-2 rounded-xl border border-border text-sm font-semibold hover:bg-muted transition-colors"
           >
             Back
           </button>
         </div>
       </header>
 
-      <main className="mx-auto max-w-4xl px-4 py-6">
-        <section className="mb-8 rounded-lg bg-white dark:bg-card p-6 shadow-sm dark:shadow-lg border border-transparent dark:border-border">
-          <h2 className="mb-4 text-lg font-semibold">Account</h2>
-          <div className="mb-4 rounded-lg border border-zinc-200 dark:border-border bg-zinc-50 dark:bg-muted p-4">
-            <div className="text-sm text-zinc-600 dark:text-muted-foreground">
-              Signed in as: <span className="font-medium">{session?.user?.email}</span>
+      <main className="mx-auto max-w-2xl px-4 py-6 space-y-6 pb-24 animate-fade-in">
+        {/* Account Section */}
+        <section className="bg-card rounded-2xl border border-border p-6 shadow-sm">
+          <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider mb-4">
+            Account
+          </h2>
+          <div className="mb-4 rounded-xl border border-border bg-muted/50 p-4">
+            <div className="text-sm text-muted-foreground">
+              Signed in as: <span className="font-medium text-foreground">{session?.user?.email}</span>
             </div>
           </div>
           <button
-            onClick={() => signOut()}
-            className="rounded-lg border border-red-300 bg-red-50 px-4 py-2 text-sm font-semibold text-red-700 hover:bg-red-100"
+            onClick={() => signOut({ callbackUrl: "/" })}
+            className="px-4 py-2 rounded-xl bg-error/10 text-error font-semibold hover:bg-error/20 transition-colors"
           >
-            Sign Out
+            Sign out
           </button>
         </section>
 
-        <section className="mb-8 rounded-lg bg-white dark:bg-card p-6 shadow-sm dark:shadow-lg border border-transparent dark:border-border">
-          <h2 className="mb-4 text-lg font-semibold">Repository Connection</h2>
+        {/* Appearance Section */}
+        <section className="bg-card rounded-2xl border border-border p-6 shadow-sm">
+          <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider mb-4">
+            Appearance
+          </h2>
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="font-medium">Theme</p>
+              <p className="text-sm text-muted-foreground">Toggle dark or light mode</p>
+            </div>
+            <ThemeToggle />
+          </div>
+        </section>
+
+        {/* Repository Section */}
+        <section className="bg-card rounded-2xl border border-border p-6 shadow-sm">
+          <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider mb-4">
+            Repository
+          </h2>
 
           {!repoStatus?.connected ? (
             <div>
-              <p className="mb-4 text-sm text-zinc-600 dark:text-muted-foreground">
+              <p className="mb-4 text-sm text-muted-foreground">
                 No repository connected. Connect a GitHub repository to start syncing your notes.
               </p>
               <button
                 onClick={handleReconnect}
-                className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700"
+                className="px-4 py-2 rounded-xl bg-primary text-primary-foreground font-semibold hover:opacity-90 transition-all active:scale-[0.98]"
               >
                 Connect Repository
               </button>
             </div>
           ) : (
-            <form onSubmit={handleSave}>
-              <div className="mb-4">
-                <label className="mb-2 block text-sm font-medium text-zinc-700 dark:text-zinc-300">
+            <form onSubmit={handleSave} className="space-y-4">
+              <div>
+                <label className="mb-2 block text-sm font-medium text-foreground">
                   Repository (owner/repo)
                 </label>
                 <input
@@ -213,17 +236,17 @@ export default function SettingsPage() {
                   onChange={(e) =>
                     setFormData({ ...formData, repoFullName: e.target.value })
                   }
-                  className="w-full rounded-lg border border-zinc-300 dark:border-border bg-transparent px-4 py-2 text-sm outline-none focus:border-violet-500 dark:focus:border-violet-400"
+                  className="w-full rounded-xl border border-border bg-background px-4 py-3 text-sm outline-none focus:border-primary focus:ring-2 focus:ring-primary/20 transition-all"
                   placeholder="username/repository"
                   required
                 />
-                <p className="mt-1 text-xs text-zinc-500">
+                <p className="mt-1.5 text-xs text-muted-foreground">
                   Example: johndoe/my-notes
                 </p>
               </div>
 
-              <div className="mb-4">
-                <label className="mb-2 block text-sm font-medium text-zinc-700">
+              <div>
+                <label className="mb-2 block text-sm font-medium text-foreground">
                   Default Branch
                 </label>
                 <input
@@ -232,14 +255,14 @@ export default function SettingsPage() {
                   onChange={(e) =>
                     setFormData({ ...formData, defaultBranch: e.target.value })
                   }
-                  className="w-full rounded-lg border border-zinc-300 px-4 py-2 text-sm outline-none focus:border-violet-500"
+                  className="w-full rounded-xl border border-border bg-background px-4 py-3 text-sm outline-none focus:border-primary focus:ring-2 focus:ring-primary/20 transition-all"
                   placeholder="main"
                   required
                 />
               </div>
 
-              <div className="mb-4">
-                <label className="mb-2 block text-sm font-medium text-zinc-700">
+              <div>
+                <label className="mb-2 block text-sm font-medium text-foreground">
                   Base Path
                 </label>
                 <input
@@ -248,27 +271,27 @@ export default function SettingsPage() {
                   onChange={(e) =>
                     setFormData({ ...formData, basePath: e.target.value })
                   }
-                  className="w-full rounded-lg border border-zinc-300 px-4 py-2 text-sm outline-none focus:border-violet-500"
+                  className="w-full rounded-xl border border-border bg-background px-4 py-3 text-sm outline-none focus:border-primary focus:ring-2 focus:ring-primary/20 transition-all"
                   placeholder="notes"
                   required
                 />
-                <p className="mt-1 text-xs text-zinc-500">
+                <p className="mt-1.5 text-xs text-muted-foreground">
                   The folder where notes will be saved (e.g., "notes" or "docs")
                 </p>
               </div>
 
-              <div className="flex gap-3">
+              <div className="flex flex-wrap gap-3 pt-2">
                 <button
                   type="submit"
                   disabled={saving}
-                  className="rounded-lg bg-violet-600 px-4 py-2 text-sm font-semibold text-white hover:bg-violet-700 disabled:opacity-50"
+                  className="px-4 py-2 rounded-xl bg-primary text-primary-foreground font-semibold hover:opacity-90 transition-all active:scale-[0.98] disabled:opacity-50"
                 >
                   {saving ? "Saving..." : "Save Changes"}
                 </button>
                 <button
                   type="button"
                   onClick={handleReconnect}
-                  className="rounded-lg border border-zinc-300 px-4 py-2 text-sm font-semibold hover:bg-zinc-100"
+                  className="px-4 py-2 rounded-xl border border-border font-semibold hover:bg-muted transition-colors"
                 >
                   Reconnect GitHub App
                 </button>
@@ -277,29 +300,32 @@ export default function SettingsPage() {
           )}
         </section>
 
+        {/* Label Management Section */}
         {repoStatus?.connected && (
-          <section className="mb-8 rounded-lg bg-white p-6 shadow-sm">
+          <section className="bg-card rounded-2xl border border-border p-6 shadow-sm">
             <div className="mb-4 flex items-center justify-between">
-              <h2 className="text-lg font-semibold">Label Management</h2>
+              <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider">
+                Labels
+              </h2>
               <button
                 onClick={handleSyncLabels}
                 disabled={syncing}
-                className="rounded-lg border border-violet-300 bg-violet-50 px-4 py-2 text-sm font-semibold text-violet-700 hover:bg-violet-100 disabled:opacity-50"
+                className="px-3 py-1.5 rounded-xl bg-primary/10 text-primary text-sm font-semibold hover:bg-primary/20 disabled:opacity-50 transition-colors"
               >
                 {syncing ? "Syncing..." : "Sync from GitHub"}
               </button>
             </div>
 
-            <p className="mb-4 text-sm text-zinc-600">
+            <p className="mb-4 text-sm text-muted-foreground">
               Manage your labels and their save paths. Labels are synced with GitHub Issues Labels.
             </p>
 
             {labels.length === 0 ? (
-              <div className="rounded-lg border border-zinc-200 bg-zinc-50 p-8 text-center">
-                <p className="text-sm text-zinc-500">No labels configured yet.</p>
+              <div className="rounded-xl border border-border bg-muted/50 p-8 text-center">
+                <p className="text-sm text-muted-foreground mb-4">No labels configured yet.</p>
                 <button
                   onClick={() => router.push("/connect/labels")}
-                  className="mt-4 rounded-lg bg-violet-600 px-4 py-2 text-sm font-semibold text-white hover:bg-violet-700"
+                  className="px-4 py-2 rounded-xl bg-primary text-primary-foreground font-semibold hover:opacity-90 transition-all active:scale-[0.98]"
                 >
                   Import Labels
                 </button>
@@ -309,29 +335,29 @@ export default function SettingsPage() {
                 {labels.map((label) => (
                   <div
                     key={label.id}
-                    className="flex items-center gap-4 rounded-lg border border-zinc-200 p-4"
+                    className="flex items-center gap-4 rounded-xl border border-border bg-background p-4"
                   >
                     <span
                       className="h-4 w-4 flex-shrink-0 rounded-full"
                       style={{ backgroundColor: label.color }}
                     />
-                    <div className="flex-1">
+                    <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-2">
-                        <span className="font-medium">{label.tag_name}</span>
+                        <span className="font-medium truncate">{label.tag_name}</span>
                         {label.is_default && (
-                          <span className="rounded-full bg-zinc-100 dark:bg-muted px-2 py-0.5 text-xs text-zinc-600 dark:text-muted-foreground">
+                          <span className="rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground">
                             Default
                           </span>
                         )}
                       </div>
                       {label.description && (
-                        <p className="mt-1 text-sm text-zinc-500 dark:text-muted-foreground">{label.description}</p>
+                        <p className="mt-1 text-sm text-muted-foreground truncate">{label.description}</p>
                       )}
                     </div>
                     {!label.is_default && (
                       <button
                         onClick={() => handleDeleteLabel(label.id)}
-                        className="flex-shrink-0 rounded-lg border border-red-300 bg-red-50 px-3 py-1 text-sm font-semibold text-red-700 hover:bg-red-100"
+                        className="flex-shrink-0 px-3 py-1.5 rounded-xl bg-error/10 text-error text-sm font-semibold hover:bg-error/20 transition-colors"
                       >
                         Delete
                       </button>
@@ -341,31 +367,46 @@ export default function SettingsPage() {
               </div>
             )}
 
-            <div className="mt-4 flex gap-3">
+            <div className="mt-4">
               <button
                 onClick={() => router.push("/connect/labels")}
-                className="rounded-lg border border-zinc-300 dark:border-border px-4 py-2 text-sm font-semibold hover:bg-zinc-100 dark:hover:bg-muted"
+                className="px-4 py-2 rounded-xl border border-border font-semibold hover:bg-muted transition-colors"
               >
                 Manage Labels
-              </button>
-              <button
-                onClick={() => router.push("/connect/folders")}
-                className="rounded-lg border border-zinc-300 dark:border-border px-4 py-2 text-sm font-semibold hover:bg-zinc-100 dark:hover:bg-muted"
-              >
-                Configure Folders
               </button>
             </div>
           </section>
         )}
 
-        <section className="rounded-lg bg-white p-6 shadow-sm">
-          <h2 className="mb-4 text-lg font-semibold">Google Drive Sync</h2>
-          <p className="mb-4 text-sm text-zinc-600">
+        {/* Folders Section */}
+        {repoStatus?.connected && (
+          <section className="bg-card rounded-2xl border border-border p-6 shadow-sm">
+            <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider mb-4">
+              Folders
+            </h2>
+            <p className="mb-4 text-sm text-muted-foreground">
+              Configure folder paths and aliases for organizing your notes.
+            </p>
+            <button
+              onClick={() => router.push("/connect/folders")}
+              className="px-4 py-2 rounded-xl bg-primary text-primary-foreground font-semibold hover:opacity-90 transition-all active:scale-[0.98]"
+            >
+              Configure Folders
+            </button>
+          </section>
+        )}
+
+        {/* Google Drive Section */}
+        <section className="bg-card rounded-2xl border border-border p-6 shadow-sm">
+          <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider mb-4">
+            Google Drive
+          </h2>
+          <p className="mb-4 text-sm text-muted-foreground">
             Google Drive synchronization is coming soon.
           </p>
           <button
             disabled
-            className="rounded-lg border border-zinc-300 px-4 py-2 text-sm font-semibold text-zinc-400"
+            className="px-4 py-2 rounded-xl border border-border text-muted-foreground font-semibold cursor-not-allowed opacity-50"
           >
             Coming Soon
           </button>

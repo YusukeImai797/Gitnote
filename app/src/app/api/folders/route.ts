@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getServerSession } from 'next-auth';
-import { authOptions } from '@/app/api/auth/[...nextauth]/route';
+import { authOptions } from '@/lib/auth.config';
 import { getServiceSupabase } from '@/lib/supabase';
 import { getOctokitForInstallation } from '@/lib/github';
 
@@ -55,18 +55,38 @@ export async function GET(request: NextRequest) {
             foldersError = err;
         }
 
-        // If table doesn't exist or no folders, scan repository
+        // If table doesn't exist or no folders, scan repository with timeout
         if (foldersError || !folders || folders.length === 0) {
-            const scannedPaths = await scanRepositoryPaths(repoConnection);
-            return NextResponse.json({
-                folders: scannedPaths.map(path => ({
-                    id: null,
-                    path,
-                    alias: null,
-                    is_default: path === 'notes/',
-                })),
-                isScanned: true
-            });
+            try {
+                const scannedPaths = await Promise.race([
+                    scanRepositoryPaths(repoConnection),
+                    new Promise<string[]>((_, reject) =>
+                        setTimeout(() => reject(new Error('Repository scan timeout')), 10000)
+                    )
+                ]);
+                return NextResponse.json({
+                    folders: scannedPaths.map(path => ({
+                        id: null,
+                        path,
+                        alias: null,
+                        is_default: path === 'notes/',
+                    })),
+                    isScanned: true
+                });
+            } catch (scanError) {
+                console.error('Repository scan failed or timed out:', scanError);
+                // Return default folder on scan failure
+                return NextResponse.json({
+                    folders: [{
+                        id: null,
+                        path: 'notes/',
+                        alias: null,
+                        is_default: true,
+                    }],
+                    isScanned: false,
+                    warning: 'Could not scan repository, using default folder'
+                });
+            }
         }
 
         return NextResponse.json({ folders, isScanned: false });

@@ -5,3 +5,11 @@ Thumbs.db
 # Env
 .env
 .env.local
+.secrets/
+
+# Temporary files
+tmpclaude-*
+nul
+
+# Archived files
+old/

@@ -8,6 +8,8 @@ import Image from "@tiptap/extension-image";
 import TaskList from "@tiptap/extension-task-list";
 import TaskItem from "@tiptap/extension-task-item";
 import { useEffect, useCallback, useState, useRef } from "react";
+import { BLOCK_MENU_ITEMS, EDITOR_CONSTANTS, isMaterialIcon } from "@/constants/editor";
+import ImageUploadModal from "./ImageUploadModal";
 
 interface EditorProps {
   content: string;
@@ -19,7 +21,7 @@ interface EditorProps {
 function Icon({ name, filled = false, className = "" }: { name: string; filled?: boolean; className?: string }) {
   return (
     <span
-      className={`material-symbols-outlined select-none ${className}`}
+      className={`material-symbols-outlined select-none leading-none ${className}`}
       style={{ fontVariationSettings: filled ? "'FILL' 1" : "'FILL' 0" }}
     >
       {name}
@@ -42,9 +44,9 @@ function ToolbarButton({
   return (
     <button
       onClick={onClick}
-      className={`p-2 rounded-lg transition-all active:scale-95 ${isActive
-          ? 'bg-primary/15 text-primary'
-          : 'text-foreground hover:bg-subtle'
+      className={`flex items-center justify-center w-9 h-9 rounded-lg transition-all active:scale-95 ${isActive
+        ? 'bg-primary text-primary-foreground shadow-sm'
+        : 'text-muted-foreground hover:text-foreground hover:bg-muted'
         }`}
       title={title}
       type="button"
@@ -76,7 +78,7 @@ function InputModal({
   useEffect(() => {
     setValue(defaultValue);
     if (isOpen && inputRef.current) {
-      setTimeout(() => inputRef.current?.focus(), 100);
+      setTimeout(() => inputRef.current?.focus(), EDITOR_CONSTANTS.MODAL_FOCUS_DELAY);
     }
   }, [isOpen, defaultValue]);
 
@@ -90,37 +92,43 @@ function InputModal({
   };
 
   return (
-    <>
-      <div className="fixed inset-0 z-50 bg-black/50" onClick={onClose} />
-      <div className="fixed left-1/2 top-1/2 z-50 -translate-x-1/2 -translate-y-1/2 w-full max-w-md p-4">
-        <form onSubmit={handleSubmit} className="bg-card rounded-2xl p-6 shadow-xl border border-border">
-          <h3 className="text-lg font-bold mb-4">{title}</h3>
-          <input
-            ref={inputRef}
-            type="text"
-            value={value}
-            onChange={(e) => setValue(e.target.value)}
-            placeholder={placeholder}
-            className="w-full px-4 py-3 rounded-xl border border-border bg-subtle/50 outline-none focus:ring-2 focus:ring-primary/20 mb-4"
-          />
-          <div className="flex gap-3 justify-end">
-            <button
-              type="button"
-              onClick={onClose}
-              className="px-4 py-2 rounded-lg text-muted-foreground hover:bg-subtle"
-            >
-              キャンセル
-            </button>
-            <button
-              type="submit"
-              className="px-4 py-2 rounded-lg bg-primary text-primary-foreground font-semibold"
-            >
-              追加
-            </button>
-          </div>
-        </form>
-      </div>
-    </>
+    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4">
+      <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={onClose} />
+      <form
+        onSubmit={handleSubmit}
+        className="relative w-full sm:max-w-md bg-card rounded-t-2xl sm:rounded-2xl p-6 shadow-2xl border border-border animate-slide-up"
+      >
+        <h3
+          className="text-lg font-semibold mb-4"
+          style={{ fontFamily: 'var(--font-display)' }}
+        >
+          {title}
+        </h3>
+        <input
+          ref={inputRef}
+          type="text"
+          value={value}
+          onChange={(e) => setValue(e.target.value)}
+          placeholder={placeholder}
+          className="w-full px-4 py-3 rounded-xl border border-border bg-subtle outline-none focus:border-primary focus:ring-2 focus:ring-primary/10 mb-4 transition-all"
+        />
+        <div className="flex gap-3 justify-end">
+          <button
+            type="button"
+            onClick={onClose}
+            className="px-4 py-2.5 rounded-xl text-muted-foreground hover:bg-muted transition-colors"
+          >
+            Cancel
+          </button>
+          <button
+            type="submit"
+            className="px-5 py-2.5 rounded-xl bg-primary text-primary-foreground font-semibold hover:opacity-90 transition-all active:scale-[0.98]"
+          >
+            Add
+          </button>
+        </div>
+      </form>
+    </div>
   );
 }
 
@@ -136,33 +144,18 @@ function FloatingBlockMenu({
   onSelect: (type: string) => void;
   position: { top: number; left: number };
 }) {
-  const items = [
-    { type: 'heading1', icon: 'H1', label: '大見出し' },
-    { type: 'heading2', icon: 'H2', label: '中見出し' },
-    { type: 'heading3', icon: 'H3', label: '小見出し' },
-    { type: 'divider' },
-    { type: 'bulletList', icon: 'format_list_bulleted', label: '箇条書き' },
-    { type: 'orderedList', icon: 'format_list_numbered', label: '番号リスト' },
-    { type: 'taskList', icon: 'check_box', label: 'タスクリスト' },
-    { type: 'divider' },
-    { type: 'blockquote', icon: 'format_quote', label: '引用' },
-    { type: 'codeBlock', icon: 'code_blocks', label: 'コードブロック' },
-    { type: 'horizontalRule', icon: 'horizontal_rule', label: '区切り線' },
-    { type: 'image', icon: 'image', label: '画像' },
-  ];
-
   if (!isOpen) return null;
 
   return (
     <>
       <div className="fixed inset-0 z-40" onClick={onClose} />
       <div
-        className="fixed bg-card border border-border rounded-xl shadow-xl p-2 min-w-[200px] z-50 max-h-[300px] overflow-y-auto"
+        className="fixed bg-card border border-border rounded-2xl shadow-xl p-2 min-w-[220px] z-50 max-h-[320px] overflow-y-auto animate-slide-up"
         style={{ top: position.top, left: position.left }}
       >
-        {items.map((item, index) => {
+        {BLOCK_MENU_ITEMS.map((item, index) => {
           if (item.type === 'divider') {
-            return <div key={index} className="h-px bg-border my-1" />;
+            return <div key={index} className="h-px bg-border my-2" />;
           }
           return (
             <button
@@ -171,10 +164,10 @@ function FloatingBlockMenu({
                 onSelect(item.type);
                 onClose();
               }}
-              className="flex items-center gap-3 w-full px-3 py-2 rounded-lg hover:bg-subtle transition-colors text-left"
+              className="flex items-center gap-3 w-full px-3 py-2.5 rounded-xl hover:bg-muted transition-colors text-left group"
             >
-              <span className="flex items-center justify-center w-7 h-7 bg-primary text-primary-foreground rounded-md text-xs font-bold">
-                {item.icon?.startsWith('format_') || item.icon?.startsWith('check_') || item.icon?.startsWith('code_') || item.icon?.startsWith('horizontal_') || item.icon === 'image'
+              <span className="flex items-center justify-center w-8 h-8 bg-primary/10 text-primary rounded-lg text-sm font-bold group-hover:bg-primary group-hover:text-primary-foreground transition-colors">
+                {isMaterialIcon(item.icon)
                   ? <Icon name={item.icon} className="text-base" />
                   : item.icon
                 }
@@ -245,24 +238,57 @@ export default function Editor({ content, onChange, placeholder = "Start writing
   const updateFloatingButtonPosition = useCallback(() => {
     if (!editor || !editorContainerRef.current) return;
 
+    const containerRect = editorContainerRef.current.getBoundingClientRect();
+
+    // If editor is empty, show button at the top
+    if (editor.isEmpty) {
+      setFloatingButtonPos({
+        top: 16,
+        visible: true
+      });
+      return;
+    }
+
+    // Try to get the current node's DOM element
+    const { $from } = editor.state.selection;
+    const pos = $from.pos;
+
+    // Find the DOM node for the current position
+    const domNode = editor.view.nodeDOM(pos);
+
+    if (domNode instanceof HTMLElement) {
+      const nodeRect = domNode.getBoundingClientRect();
+      const topPos = nodeRect.top - containerRect.top;
+
+      setFloatingButtonPos({
+        top: Math.max(0, topPos),
+        visible: true
+      });
+      return;
+    }
+
+    // Fallback: use selection range
     const selection = window.getSelection();
     if (!selection || selection.rangeCount === 0) {
-      setFloatingButtonPos({ top: 0, visible: false });
+      setFloatingButtonPos({
+        top: 16,
+        visible: true
+      });
       return;
     }
 
     const range = selection.getRangeAt(0);
     const rect = range.getBoundingClientRect();
-    const containerRect = editorContainerRef.current.getBoundingClientRect();
 
     if (rect.top === 0 && rect.left === 0) {
-      // No valid position
-      setFloatingButtonPos({ top: 0, visible: false });
+      setFloatingButtonPos({
+        top: 16,
+        visible: true
+      });
       return;
     }
 
-    // Position button to the left of the current line
-    const topPos = rect.top - containerRect.top + (rect.height / 2) - 16; // Center vertically
+    const topPos = rect.top - containerRect.top + (rect.height / 2) - EDITOR_CONSTANTS.FLOATING_BUTTON_OFFSET;
 
     setFloatingButtonPos({
       top: Math.max(0, topPos),
@@ -275,6 +301,13 @@ export default function Editor({ content, onChange, placeholder = "Start writing
       editor.commands.setContent(content);
     }
   }, [content, editor]);
+
+  // Initialize floating button position when editor is ready
+  useEffect(() => {
+    if (editor) {
+      updateFloatingButtonPosition();
+    }
+  }, [editor, updateFloatingButtonPosition]);
 
   // Update position on window resize
   useEffect(() => {
@@ -310,9 +343,17 @@ export default function Editor({ content, onChange, placeholder = "Start writing
     if (!editorContainerRef.current) return;
 
     const containerRect = editorContainerRef.current.getBoundingClientRect();
+    // Position menu below the + button, left-aligned with some offset
+    // Use viewport coordinates since menu uses fixed positioning
+    const menuTop = Math.min(
+      containerRect.top + floatingButtonPos.top + 32,
+      window.innerHeight - 350 // Keep menu within viewport
+    );
+    const menuLeft = Math.max(16, containerRect.left - 8);
+
     setFloatingMenuPos({
-      top: floatingButtonPos.top + containerRect.top + 40,
-      left: containerRect.left + 20
+      top: menuTop,
+      left: menuLeft
     });
     setShowFloatingMenu(true);
   }, [floatingButtonPos]);
@@ -389,13 +430,13 @@ export default function Editor({ content, onChange, placeholder = "Start writing
       />
 
       {/* Floating Toolbar - sticky at bottom of editor card */}
-      <div className="sticky bottom-0 left-0 right-0 mt-4 py-3 px-2 bg-card/98 backdrop-blur-md border-t border-border -mx-6 -mb-6 rounded-b-2xl">
+      <div className="sticky bottom-0 left-0 right-0 mt-6 py-1 px-3 bg-card/95 backdrop-blur-md border-t border-border/50 -mx-6 -mb-6 rounded-b-2xl opacity-50 hover:opacity-100 focus-within:opacity-100 transition-opacity">
         <div className="flex items-center gap-1">
           {/* Add Block Button (note-style) - outside scroll container */}
           <div className="relative shrink-0" ref={blockMenuRef}>
             <button
               onClick={() => setShowBlockMenu(!showBlockMenu)}
-              className="flex items-center justify-center w-9 h-9 rounded-full bg-primary text-primary-foreground shadow-md shadow-primary/20 hover:scale-105 transition-transform mr-2"
+              className="flex items-center justify-center w-9 h-9 rounded-full bg-primary text-primary-foreground shadow-sm hover:scale-105 transition-transform"
               title="ブロックを追加"
               type="button"
             >
@@ -405,23 +446,10 @@ export default function Editor({ content, onChange, placeholder = "Start writing
             {showBlockMenu && (
               <>
                 <div className="fixed inset-0 z-40" onClick={() => setShowBlockMenu(false)} />
-                <div className="absolute left-0 bottom-full mb-2 bg-card border border-border rounded-xl shadow-lg p-2 min-w-[200px] z-50 max-h-[300px] overflow-y-auto">
-                  {[
-                    { type: 'heading1', icon: 'H1', label: '大見出し' },
-                    { type: 'heading2', icon: 'H2', label: '中見出し' },
-                    { type: 'heading3', icon: 'H3', label: '小見出し' },
-                    { type: 'divider' },
-                    { type: 'bulletList', icon: 'format_list_bulleted', label: '箇条書き' },
-                    { type: 'orderedList', icon: 'format_list_numbered', label: '番号リスト' },
-                    { type: 'taskList', icon: 'check_box', label: 'タスクリスト' },
-                    { type: 'divider' },
-                    { type: 'blockquote', icon: 'format_quote', label: '引用' },
-                    { type: 'codeBlock', icon: 'code_blocks', label: 'コードブロック' },
-                    { type: 'horizontalRule', icon: 'horizontal_rule', label: '区切り線' },
-                    { type: 'image', icon: 'image', label: '画像' },
-                  ].map((item, index) => {
+                <div className="absolute left-0 bottom-full mb-2 bg-card border border-border rounded-2xl shadow-xl p-2 min-w-[220px] z-50 max-h-[320px] overflow-y-auto animate-slide-up">
+                  {BLOCK_MENU_ITEMS.map((item, index) => {
                     if (item.type === 'divider') {
-                      return <div key={index} className="h-px bg-border my-1" />;
+                      return <div key={index} className="h-px bg-border my-2" />;
                     }
                     return (
                       <button
@@ -430,10 +458,10 @@ export default function Editor({ content, onChange, placeholder = "Start writing
                           handleBlockSelect(item.type);
                           setShowBlockMenu(false);
                         }}
-                        className="flex items-center gap-3 w-full px-3 py-2 rounded-lg hover:bg-subtle transition-colors text-left"
+                        className="flex items-center gap-3 w-full px-3 py-2.5 rounded-xl hover:bg-muted transition-colors text-left group"
                       >
-                        <span className="flex items-center justify-center w-7 h-7 bg-primary text-primary-foreground rounded-md text-xs font-bold">
-                          {item.icon?.startsWith('format_') || item.icon?.startsWith('check_') || item.icon?.startsWith('code_') || item.icon?.startsWith('horizontal_') || item.icon === 'image'
+                        <span className="flex items-center justify-center w-8 h-8 bg-primary/10 text-primary rounded-lg text-sm font-bold group-hover:bg-primary group-hover:text-primary-foreground transition-colors">
+                          {isMaterialIcon(item.icon)
                             ? <Icon name={item.icon} className="text-base" />
                             : item.icon
                           }
@@ -487,11 +515,11 @@ export default function Editor({ content, onChange, placeholder = "Start writing
             {/* Headings dropdown */}
             <div className="relative group">
               <ToolbarButton
-                onClick={() => { }}
+                onClick={() => editor.chain().focus().toggleHeading({ level: 2 }).run()}
                 isActive={editor.isActive('heading')}
                 title="見出し"
               >
-                <Icon name="title" />
+                <Icon name="format_h1" />
               </ToolbarButton>
               <div className="absolute bottom-full left-0 mb-2 hidden group-hover:block z-50">
                 <div className="bg-card border border-border rounded-xl shadow-lg p-1.5 flex flex-col min-w-[130px]">
@@ -548,6 +576,22 @@ export default function Editor({ content, onChange, placeholder = "Start writing
               <Icon name="check_box" />
             </ToolbarButton>
 
+            {/* Indent controls for mobile */}
+            <ToolbarButton
+              onClick={() => editor.chain().focus().liftListItem('listItem').run()}
+              isActive={false}
+              title="インデント減らす"
+            >
+              <Icon name="format_indent_decrease" />
+            </ToolbarButton>
+            <ToolbarButton
+              onClick={() => editor.chain().focus().sinkListItem('listItem').run()}
+              isActive={false}
+              title="インデント増やす"
+            >
+              <Icon name="format_indent_increase" />
+            </ToolbarButton>
+
             <div className="w-px h-6 bg-border mx-1" />
 
             {/* Other */}
@@ -600,13 +644,11 @@ export default function Editor({ content, onChange, placeholder = "Start writing
         defaultValue={linkDefaultValue}
       />
 
-      {/* Image Modal */}
-      <InputModal
+      {/* Image Upload Modal */}
+      <ImageUploadModal
         isOpen={showImageModal}
         onClose={() => setShowImageModal(false)}
         onSubmit={handleImageSubmit}
-        title="画像を追加"
-        placeholder="https://example.com/image.jpg"
       />
     </div>
   );
