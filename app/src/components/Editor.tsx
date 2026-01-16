@@ -390,26 +390,17 @@ export default function Editor({ content, onChange, placeholder = "Start writing
     e.preventDefault();
     e.stopPropagation();
 
-    // Use the click event target to get accurate button position
-    const button = e.currentTarget;
-    const buttonRect = button.getBoundingClientRect();
+    // Use mouse click position instead of button position
+    // This is more reliable because the button may move due to focus changes
+    const clickY = e.clientY;
+    const clickX = e.clientX;
 
     // Calculate menu position relative to viewport (for fixed positioning)
-    // buttonRect values are already viewport-relative from getBoundingClientRect()
     const menuTop = Math.min(
-      buttonRect.bottom + 8, // 8px below the button
+      clickY + 20, // 20px below the click
       window.innerHeight - 350 // Keep menu within viewport
     );
-    const menuLeft = Math.max(16, buttonRect.left);
-
-    console.log('[DEBUG] Button position:', {
-      top: buttonRect.top,
-      bottom: buttonRect.bottom,
-      left: buttonRect.left,
-      menuTop,
-      menuLeft,
-      scrollY: window.scrollY
-    });
+    const menuLeft = Math.max(16, clickX - 100); // Center menu roughly around click
 
     setFloatingMenuPos({
       top: menuTop,
