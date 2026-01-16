@@ -145,9 +145,57 @@ export default function EditorContent() {
     };
 
     // Handle page visibility change (when switching tabs/apps)
-    const handleVisibilityChange = () => {
+    const handleVisibilityChange = async () => {
       if (document.visibilityState === 'hidden' && hasUnsyncedChanges.current) {
         saveImmediately();
+      } else if (document.visibilityState === 'visible' && note.id && isOnline) {
+        // When returning to foreground, check if server has newer content
+        try {
+          const response = await fetch(`/api/notes/${note.id}`);
+          if (!response.ok) return;
+
+          const data = await response.json();
+          if (!data.note) return;
+
+          const serverUpdatedAt = new Date(data.note.updated_at || 0).getTime();
+          const localNote = await getLocalNote(note.id);
+
+          if (localNote) {
+            const hasLocalEdits = localNote.updatedAt > localNote.syncedAt;
+            const cacheIsStale = localNote.syncedAt < serverUpdatedAt;
+            const serverContent = data.content || data.note.content || "";
+            const contentDiffers = localNote.content !== serverContent;
+
+            console.log('[SYNC] Visibility change check:', {
+              serverUpdatedAt,
+              localSyncedAt: localNote.syncedAt,
+              cacheIsStale,
+              hasLocalEdits,
+              contentDiffers,
+            });
+
+            if (cacheIsStale && !hasLocalEdits) {
+              // Server is newer, no local edits - update silently
+              console.log('[SYNC] Foreground: Updating to server version');
+              setNote({
+                id: data.note.id,
+                title: data.note.title,
+                content: serverContent,
+                tags: data.note.tags || [],
+              });
+              await markNoteSynced(note.id, serverUpdatedAt);
+              setSyncStatus("synced");
+              toast.info("他のデバイスからの変更を反映しました");
+            } else if (cacheIsStale && hasLocalEdits && contentDiffers) {
+              // True conflict - warn user
+              console.log('[SYNC] Foreground: Conflict detected');
+              toast.warning("他のデバイスで変更がありました。Syncボタンで同期してください。");
+              setSyncStatus("idle");
+            }
+          }
+        } catch (error) {
+          console.error('[SYNC] Visibility check failed:', error);
+        }
       }
     };
 
