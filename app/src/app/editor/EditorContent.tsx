@@ -6,7 +6,7 @@ import { useSession } from "next-auth/react";
 import { toast } from "sonner";
 import dynamic from "next/dynamic";
 import { SyncStatusDisplay } from "@/components/SyncStatusIcon";
-import { saveLocalNote, getLocalNote, markNoteSynced } from "@/lib/local-db";
+import { saveLocalNote, getLocalNote, markNoteSynced, saveSyncedNote } from "@/lib/local-db";
 import type { Note, Label, FolderPath, SyncStatus } from "@/types";
 
 // Dynamic imports to reduce initial bundle size
@@ -247,9 +247,10 @@ export default function EditorContent() {
           const serverUpdatedAt = new Date(data.note.updated_at || 0).getTime();
           const localNote = await getLocalNote(note.id);
 
+          const serverContent = data.content || data.note.content || "";
+
           if (localNote) {
             const cacheIsStale = localNote.syncedAt < serverUpdatedAt;
-            const serverContent = data.content || data.note.content || "";
             const contentDiffers = localNote.content !== serverContent;
 
             console.log('[SYNC] Visibility change check:', {
@@ -275,6 +276,16 @@ export default function EditorContent() {
               // Do nothing, user's local changes take priority
               console.log('[SYNC] Foreground: Local changes pending, keeping local');
             }
+          } else {
+            // No local note - cache the server content
+            console.log('[SYNC] Visibility change: No local note, caching server content');
+            await saveSyncedNote({
+              id: note.id,
+              title: data.note.title,
+              content: serverContent,
+              tags: data.note.tags || [],
+              folderPathId: data.note.folder_path_id,
+            }, serverUpdatedAt);
           }
         } catch (error) {
           console.error('[SYNC] Visibility check failed:', error);
@@ -461,10 +472,10 @@ export default function EditorContent() {
           });
 
           if (!contentDiffers) {
-            // Content is the same - use server version and update syncedAt
+            // Content is the same - use server version
+            // syncedAt will be updated via saveSyncedNote below
             console.log('[SYNC] Decision: Use server (content identical)');
             useLocal = false;
-            await markNoteSynced(id, serverUpdatedAt);
           } else if (cacheIsStale) {
             // Server was updated AND content differs = conflict
             console.log('[SYNC] Decision: Conflict detected');
@@ -494,15 +505,33 @@ export default function EditorContent() {
           setShowConflictModal(true);
           hasUnsyncedChanges.current = true;
         } else {
+          const finalTitle = useLocal && localNote ? localNote.title : data.note.title;
+          const finalContent = useLocal && localNote ? localNote.content : serverContent;
+          const finalTags = useLocal && localNote ? localNote.tags : (data.note.tags || []);
+
           setNote({
             id: data.note.id,
-            title: useLocal && localNote ? localNote.title : data.note.title,
-            content: useLocal && localNote ? localNote.content : serverContent,
-            tags: useLocal && localNote ? localNote.tags : (data.note.tags || []),
+            title: finalTitle,
+            content: finalContent,
+            tags: finalTags,
           });
           setSelectedFolderId(data.note.folder_path_id);
           initialFolderIdRef.current = data.note.folder_path_id;
           setSyncStatus(useLocal ? "idle" : "synced");
+
+          // CRITICAL: Always save to IndexedDB when using server content
+          // Use saveSyncedNote to set both updatedAt and syncedAt to server timestamp
+          // This prevents false "local changes" detection on subsequent loads
+          if (!useLocal) {
+            await saveSyncedNote({
+              id: data.note.id,
+              title: finalTitle,
+              content: finalContent,
+              tags: finalTags,
+              folderPathId: data.note.folder_path_id,
+            }, serverUpdatedAt);
+            console.log('[SYNC] Saved server content to IndexedDB with syncedAt:', serverUpdatedAt);
+          }
 
           if (useLocal && localNote) {
             hasUnsyncedChanges.current = true;
@@ -803,11 +832,42 @@ export default function EditorContent() {
   const handleUseRemote = async () => {
     if (!note.id) return;
 
-    await loadNote(note.id);
-    hasUnsyncedChanges.current = false;
-    setSyncStatus("synced");
-    setShowConflictModal(false);
-    toast.success("リモート版に戻しました");
+    try {
+      // Directly use the already-fetched remoteContent instead of re-fetching
+      // This avoids the comparison logic in loadNote being re-run
+      const response = await fetch(`/api/notes/${note.id}`);
+      const data = await response.json();
+
+      if (data.note) {
+        const serverContent = data.content || data.note.content || "";
+        const serverUpdatedAt = new Date(data.note.updated_at || 0).getTime();
+
+        // Update state with server content
+        setNote({
+          id: data.note.id,
+          title: data.note.title,
+          content: serverContent,
+          tags: data.note.tags || [],
+        });
+
+        // Update IndexedDB with server content - use saveSyncedNote to avoid false local changes
+        await saveSyncedNote({
+          id: note.id,
+          title: data.note.title,
+          content: serverContent,
+          tags: data.note.tags || [],
+          folderPathId: data.note.folder_path_id,
+        }, serverUpdatedAt);
+
+        hasUnsyncedChanges.current = false;
+        setSyncStatus("synced");
+        setShowConflictModal(false);
+        toast.success("リモート版に戻しました");
+      }
+    } catch (error) {
+      console.error('Failed to use remote version:', error);
+      toast.error("リモート版の取得に失敗しました");
+    }
   };
 
   if (status === "loading" || loading) {

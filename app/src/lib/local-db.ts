@@ -50,6 +50,16 @@ export async function markNoteSynced(id: string, serverUpdatedAt: number): Promi
     await db.notes.update(id, { syncedAt: serverUpdatedAt });
 }
 
+// Save synced note from server - both updatedAt and syncedAt set to server timestamp
+// Use this when caching server content to avoid false "local changes" detection
+export async function saveSyncedNote(note: Omit<LocalNote, 'updatedAt' | 'syncedAt'>, serverUpdatedAt: number): Promise<void> {
+    await db.notes.put({
+        ...note,
+        updatedAt: serverUpdatedAt,
+        syncedAt: serverUpdatedAt,
+    } as LocalNote);
+}
+
 // Delete note from IndexedDB
 export async function deleteLocalNote(id: string): Promise<void> {
     await db.notes.delete(id);
