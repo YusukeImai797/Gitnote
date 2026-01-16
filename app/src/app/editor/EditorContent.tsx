@@ -61,6 +61,7 @@ export default function EditorContent() {
   // Refs to prevent infinite loops during init
   const isCreatingDraft = useRef(false);
   const isLoadingNote = useRef(false);
+  const isResolvingConflict = useRef(false);
   // BroadcastChannel for multi-tab detection
   const broadcastChannelRef = useRef<BroadcastChannel | null>(null);
   const tabIdRef = useRef<string>(Date.now().toString());
@@ -267,9 +268,9 @@ export default function EditorContent() {
       if (document.visibilityState === 'hidden' && hasUnsyncedChanges.current) {
         saveImmediately();
       } else if (document.visibilityState === 'visible' && note.id && isOnline) {
-        // Skip conflict check if modal is already showing (user is resolving conflict)
-        if (showConflictModal) {
-          console.log('[SYNC] Visibility change: Skipping check, conflict modal already open');
+        // Skip conflict check if modal is already showing or conflict is being resolved
+        if (showConflictModal || isResolvingConflict.current) {
+          console.log('[SYNC] Visibility change: Skipping check, conflict resolution in progress');
           return;
         }
 
@@ -869,6 +870,9 @@ export default function EditorContent() {
   const handleUseRemote = async () => {
     if (!note.id) return;
 
+    // Set flag to prevent conflict re-detection during resolution
+    isResolvingConflict.current = true;
+
     try {
       // Close modal FIRST to prevent re-triggering by visibility changes
       setShowConflictModal(false);
@@ -908,6 +912,11 @@ export default function EditorContent() {
       toast.error("リモート版の取得に失敗しました");
       // Re-show modal on error so user can retry
       setShowConflictModal(true);
+    } finally {
+      // Clear the flag after a short delay to ensure state updates are processed
+      setTimeout(() => {
+        isResolvingConflict.current = false;
+      }, 500);
     }
   };
 
@@ -1011,6 +1020,7 @@ export default function EditorContent() {
           {/* Center: Sync status */}
           <div className="flex items-center gap-3">
             <SyncStatusDisplay status={syncStatus} lastSaved={lastSaved} />
+            <span className="text-[10px] text-muted-foreground/50">v0.2.0</span>
             {!isOnline && (
               <span className="text-xs text-warning font-medium px-2 py-0.5 bg-warning/10 rounded-full">オフライン</span>
             )}

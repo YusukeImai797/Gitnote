@@ -185,7 +185,7 @@ export default function Editor({ content, onChange, placeholder = "Start writing
   const [showBlockMenu, setShowBlockMenu] = useState(false);
   const [showFloatingMenu, setShowFloatingMenu] = useState(false);
   const [floatingMenuPos, setFloatingMenuPos] = useState({ top: 0, left: 0 });
-  const [floatingButtonPos, setFloatingButtonPos] = useState({ top: 0, visible: false });
+  const [floatingButtonPos, setFloatingButtonPos] = useState({ top: 16, visible: true });
   const [showLinkModal, setShowLinkModal] = useState(false);
   const [showImageModal, setShowImageModal] = useState(false);
   const [linkDefaultValue, setLinkDefaultValue] = useState("");
@@ -194,6 +194,7 @@ export default function Editor({ content, onChange, placeholder = "Start writing
   const [canOutdent, setCanOutdent] = useState(false);
   const blockMenuRef = useRef<HTMLDivElement>(null);
   const editorContainerRef = useRef<HTMLDivElement>(null);
+  const floatingPlusButtonRef = useRef<HTMLButtonElement>(null);
 
   const editor = useEditor({
     extensions: [
@@ -232,6 +233,10 @@ export default function Editor({ content, onChange, placeholder = "Start writing
     onFocus: ({ editor }) => {
       updateFloatingButtonPosition();
       updateListContext(editor);
+    },
+    onCreate: () => {
+      // Initialize floating button position when editor is created
+      setTimeout(() => updateFloatingButtonPosition(), 100);
     },
     editorProps: {
       attributes: {
@@ -382,25 +387,23 @@ export default function Editor({ content, onChange, placeholder = "Start writing
   }, [editor]);
 
   const handleFloatingPlusClick = useCallback(() => {
-    if (!editorContainerRef.current) return;
+    if (!floatingPlusButtonRef.current) return;
 
-    const containerRect = editorContainerRef.current.getBoundingClientRect();
-    // Position menu directly below the + button
-    // The + button is positioned at left: -40px (ml-10 = 2.5rem = 40px) from the container
-    const buttonLeft = containerRect.left - 40; // Button's viewport left position
+    // Get actual button position from DOM
+    const buttonRect = floatingPlusButtonRef.current.getBoundingClientRect();
     const menuTop = Math.min(
-      containerRect.top + floatingButtonPos.top + 32,
+      buttonRect.bottom + 8, // 8px below the button
       window.innerHeight - 350 // Keep menu within viewport
     );
-    // Position menu aligned with the button, with some padding from screen edge
-    const menuLeft = Math.max(16, buttonLeft);
+    // Position menu aligned with the button
+    const menuLeft = Math.max(16, buttonRect.left);
 
     setFloatingMenuPos({
       top: menuTop,
       left: menuLeft
     });
     setShowFloatingMenu(true);
-  }, [floatingButtonPos]);
+  }, []);
 
   const handleBlockSelect = useCallback((type: string) => {
     if (!editor) return;
@@ -452,6 +455,7 @@ export default function Editor({ content, onChange, placeholder = "Start writing
       {/* Floating + button near cursor (mobile-friendly) */}
       {floatingButtonPos.visible && !showBlockMenu && !showFloatingMenu && !isInList && (
         <button
+          ref={floatingPlusButtonRef}
           onClick={handleFloatingPlusClick}
           className="absolute left-0 w-7 h-7 -ml-10 flex items-center justify-center rounded-full bg-primary/20 text-primary hover:bg-primary hover:text-primary-foreground transition-all z-30 opacity-60 hover:opacity-100"
           style={{ top: floatingButtonPos.top }}
