@@ -1020,7 +1020,7 @@ export default function EditorContent() {
           {/* Center: Sync status */}
           <div className="flex items-center gap-3">
             <SyncStatusDisplay status={syncStatus} lastSaved={lastSaved} />
-            <span className="text-[10px] text-muted-foreground/50">v0.2.1</span>
+            <span className="text-[10px] text-muted-foreground/50">v0.2.2</span>
             {!isOnline && (
               <span className="text-xs text-warning font-medium px-2 py-0.5 bg-warning/10 rounded-full">オフライン</span>
             )}
