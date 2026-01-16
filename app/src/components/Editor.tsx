@@ -194,7 +194,6 @@ export default function Editor({ content, onChange, placeholder = "Start writing
   const [canOutdent, setCanOutdent] = useState(false);
   const blockMenuRef = useRef<HTMLDivElement>(null);
   const editorContainerRef = useRef<HTMLDivElement>(null);
-  const floatingPlusButtonRef = useRef<HTMLButtonElement>(null);
 
   const editor = useEditor({
     extensions: [
@@ -386,16 +385,16 @@ export default function Editor({ content, onChange, placeholder = "Start writing
     editor.chain().focus().setImage({ src: url }).run();
   }, [editor]);
 
-  const handleFloatingPlusClick = useCallback(() => {
-    if (!floatingPlusButtonRef.current) return;
+  const handleFloatingPlusClick = useCallback((e: React.MouseEvent<HTMLButtonElement>) => {
+    // Use the click event target to get accurate button position
+    const button = e.currentTarget;
+    const buttonRect = button.getBoundingClientRect();
 
-    // Get actual button position from DOM
-    const buttonRect = floatingPlusButtonRef.current.getBoundingClientRect();
+    // Calculate menu position relative to viewport (for fixed positioning)
     const menuTop = Math.min(
       buttonRect.bottom + 8, // 8px below the button
       window.innerHeight - 350 // Keep menu within viewport
     );
-    // Position menu aligned with the button
     const menuLeft = Math.max(16, buttonRect.left);
 
     setFloatingMenuPos({
@@ -455,7 +454,6 @@ export default function Editor({ content, onChange, placeholder = "Start writing
       {/* Floating + button near cursor (mobile-friendly) */}
       {floatingButtonPos.visible && !showBlockMenu && !showFloatingMenu && !isInList && (
         <button
-          ref={floatingPlusButtonRef}
           onClick={handleFloatingPlusClick}
           className="absolute left-0 w-7 h-7 -ml-10 flex items-center justify-center rounded-full bg-primary/20 text-primary hover:bg-primary hover:text-primary-foreground transition-all z-30 opacity-60 hover:opacity-100"
           style={{ top: floatingButtonPos.top }}
