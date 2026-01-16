@@ -61,13 +61,47 @@ export default function EditorContent() {
   // Refs to prevent infinite loops during init
   const isCreatingDraft = useRef(false);
   const isLoadingNote = useRef(false);
+  // BroadcastChannel for multi-tab detection
+  const broadcastChannelRef = useRef<BroadcastChannel | null>(null);
+  const tabIdRef = useRef<string>(Date.now().toString());
 
-  // Online/Offline detection
+  // Online/Offline detection with auto-sync on resume
   useEffect(() => {
-    const handleOnline = () => {
+    const handleOnline = async () => {
       setIsOnline(true);
-      toast.success("オンラインに復帰しました");
+
+      // Auto-sync unsaved changes when coming back online
+      if (note.id && hasUnsyncedChanges.current) {
+        try {
+          const response = await fetch(`/api/notes/${note.id}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              title: note.title,
+              content: note.content,
+              tags: note.tags,
+              saveToDbOnly: true,
+            }),
+          });
+
+          if (response.ok) {
+            const data = await response.json();
+            const serverUpdatedAt = new Date(data.note?.updated_at || Date.now()).getTime();
+            await markNoteSynced(note.id, serverUpdatedAt);
+            hasUnsyncedChanges.current = false;
+            toast.success("オンラインに復帰しました。変更を同期しました。");
+          } else {
+            toast.warning("オンラインに復帰しましたが、同期に失敗しました。");
+          }
+        } catch (error) {
+          console.error('[SYNC] Failed to sync on online resume:', error);
+          toast.warning("オンラインに復帰しましたが、同期に失敗しました。");
+        }
+      } else {
+        toast.success("オンラインに復帰しました");
+      }
     };
+
     const handleOffline = () => {
       setIsOnline(false);
       toast.warning("オフラインです。変更はローカルに保存されます");
@@ -81,7 +115,60 @@ export default function EditorContent() {
       window.removeEventListener('online', handleOnline);
       window.removeEventListener('offline', handleOffline);
     };
-  }, []);
+  }, [note.id, note.title, note.content, note.tags]);
+
+  // Multi-tab detection using BroadcastChannel
+  useEffect(() => {
+    if (typeof window === 'undefined' || !('BroadcastChannel' in window)) return;
+
+    const channel = new BroadcastChannel('gitnote-editor-sync');
+    broadcastChannelRef.current = channel;
+
+    channel.onmessage = (event) => {
+      const { type, noteId, tabId, content } = event.data;
+
+      // Ignore messages from self
+      if (tabId === tabIdRef.current) return;
+
+      if (type === 'NOTE_EDITING' && noteId === note.id) {
+        toast.warning("このノートは別のタブでも編集されています");
+      }
+
+      if (type === 'NOTE_SAVED' && noteId === note.id) {
+        // Another tab saved this note - check if we need to update
+        const localContent = note.content;
+        if (content !== localContent && !hasUnsyncedChanges.current) {
+          // Update our content to match
+          setNote(prev => ({ ...prev, content }));
+          toast.info("別のタブからの変更を反映しました");
+        }
+      }
+    };
+
+    return () => {
+      channel.close();
+      broadcastChannelRef.current = null;
+    };
+  }, [note.id, note.content]);
+
+  // Notify other tabs when editing
+  useEffect(() => {
+    if (!note.id || !broadcastChannelRef.current) return;
+
+    // Debounce: only notify when user is actively typing
+    const notifyOtherTabs = () => {
+      broadcastChannelRef.current?.postMessage({
+        type: 'NOTE_EDITING',
+        noteId: note.id,
+        tabId: tabIdRef.current,
+      });
+    };
+
+    // Notify on content change (debounced by the effect itself)
+    if (hasUnsyncedChanges.current) {
+      notifyOtherTabs();
+    }
+  }, [note.id, note.content]);
 
   // Keyboard shortcut to show help (?)
   useEffect(() => {
@@ -161,7 +248,6 @@ export default function EditorContent() {
           const localNote = await getLocalNote(note.id);
 
           if (localNote) {
-            const hasLocalEdits = localNote.updatedAt > localNote.syncedAt;
             const cacheIsStale = localNote.syncedAt < serverUpdatedAt;
             const serverContent = data.content || data.note.content || "";
             const contentDiffers = localNote.content !== serverContent;
@@ -170,27 +256,24 @@ export default function EditorContent() {
               serverUpdatedAt,
               localSyncedAt: localNote.syncedAt,
               cacheIsStale,
-              hasLocalEdits,
               contentDiffers,
             });
 
-            if (cacheIsStale && !hasLocalEdits) {
-              // Server is newer, no local edits - update silently
-              console.log('[SYNC] Foreground: Updating to server version');
-              setNote({
-                id: data.note.id,
-                title: data.note.title,
-                content: serverContent,
-                tags: data.note.tags || [],
-              });
-              await markNoteSynced(note.id, serverUpdatedAt);
-              setSyncStatus("synced");
-              toast.info("他のデバイスからの変更を反映しました");
-            } else if (cacheIsStale && hasLocalEdits && contentDiffers) {
-              // True conflict - warn user
+            if (!contentDiffers) {
+              // Content is the same - just update syncedAt silently
+              if (cacheIsStale) {
+                await markNoteSynced(note.id, serverUpdatedAt);
+              }
+            } else if (cacheIsStale) {
+              // Server updated AND content differs = conflict
               console.log('[SYNC] Foreground: Conflict detected');
-              toast.warning("他のデバイスで変更がありました。Syncボタンで同期してください。");
-              setSyncStatus("idle");
+              setRemoteContent(serverContent);
+              setSyncStatus("conflict");
+              setShowConflictModal(true);
+            } else {
+              // Content differs but server is not newer - local changes pending
+              // Do nothing, user's local changes take priority
+              console.log('[SYNC] Foreground: Local changes pending, keeping local');
             }
           }
         } catch (error) {
@@ -354,82 +437,77 @@ export default function EditorContent() {
         const serverContent = data.content || data.note.content || "";
         const serverUpdatedAt = new Date(data.note.updated_at || 0).getTime();
 
-        // Multi-device sync logic:
-        // syncedAt now represents "which server version we last synced to" (server's updated_at)
-        // This allows us to distinguish between:
-        // - Stale cache: syncedAt < serverUpdatedAt (another device updated)
-        // - True local edits: syncedAt >= serverUpdatedAt AND content differs
-        // - True conflict: both have changes (rare)
+        // Simplified content-based sync logic:
+        // 1. If content is the same → use server (update syncedAt)
+        // 2. If content differs AND server is newer → show conflict UI
+        // 3. If content differs AND server is NOT newer → use local
 
         let useLocal = false;
+        let showConflict = false;
 
         if (localNote) {
-          // Case 1: Cache is stale (another device updated the server)
           const cacheIsStale = localNote.syncedAt < serverUpdatedAt;
-
-          // Case 2: True local edits (edited on this device after last sync)
-          const hasLocalEdits = localNote.updatedAt > localNote.syncedAt;
-
-          // Compare actual content to detect meaningful differences
           const contentDiffers = localNote.content !== serverContent;
 
-          // Debug logging for multi-device sync
+          // Debug logging
           console.log('[SYNC] loadNote decision:', {
             noteId: id,
             localSyncedAt: localNote.syncedAt,
-            localUpdatedAt: localNote.updatedAt,
             serverUpdatedAt,
             cacheIsStale,
-            hasLocalEdits,
             contentDiffers,
             localContentPreview: localNote.content?.substring(0, 50),
             serverContentPreview: serverContent?.substring(0, 50),
           });
 
-          if (cacheIsStale && !hasLocalEdits) {
-            // Server is newer, no local edits - use server, update cache
-            console.log('[SYNC] Decision: Use server (cache stale, no local edits)');
+          if (!contentDiffers) {
+            // Content is the same - use server version and update syncedAt
+            console.log('[SYNC] Decision: Use server (content identical)');
             useLocal = false;
             await markNoteSynced(id, serverUpdatedAt);
-          } else if (hasLocalEdits && !cacheIsStale) {
-            // Local has edits, server unchanged - use local
-            console.log('[SYNC] Decision: Use local (has edits, cache fresh)');
-            useLocal = true;
-          } else if (hasLocalEdits && cacheIsStale) {
-            // True conflict: both have changes
-            if (contentDiffers) {
-              // Show conflict warning, prefer local for now (user can manually sync)
-              console.log('[SYNC] Decision: Use local (conflict - both changed)');
-              toast.warning("他のデバイスで変更がありました。ローカルの変更を保持しています。");
-              useLocal = true;
-            } else {
-              // Content is the same despite timestamp differences - no real conflict
-              console.log('[SYNC] Decision: Use server (content same)');
-              useLocal = false;
-              await markNoteSynced(id, serverUpdatedAt);
-            }
+          } else if (cacheIsStale) {
+            // Server was updated AND content differs = conflict
+            console.log('[SYNC] Decision: Conflict detected');
+            showConflict = true;
+            // Store remote content for conflict UI
+            setRemoteContent(serverContent);
           } else {
-            // No local edits, cache is fresh - use server (normal case)
-            console.log('[SYNC] Decision: Use server (normal case)');
-            useLocal = false;
+            // Server is NOT newer, but content differs = local has unsaved changes
+            console.log('[SYNC] Decision: Use local (local changes pending)');
+            useLocal = true;
           }
         } else {
           console.log('[SYNC] No local note found, using server');
         }
 
-        setNote({
-          id: data.note.id,
-          title: useLocal && localNote ? localNote.title : data.note.title,
-          content: useLocal && localNote ? localNote.content : serverContent,
-          tags: useLocal && localNote ? localNote.tags : (data.note.tags || []),
-        });
-        setSelectedFolderId(data.note.folder_path_id);
-        initialFolderIdRef.current = data.note.folder_path_id;
-        setSyncStatus(useLocal ? "idle" : "synced");
-
-        if (useLocal && localNote) {
+        if (showConflict) {
+          // Show conflict modal - let user choose
+          setNote({
+            id: data.note.id,
+            title: localNote!.title,
+            content: localNote!.content,
+            tags: localNote!.tags,
+          });
+          setSelectedFolderId(data.note.folder_path_id);
+          initialFolderIdRef.current = data.note.folder_path_id;
+          setSyncStatus("conflict");
+          setShowConflictModal(true);
           hasUnsyncedChanges.current = true;
-          toast.info("ローカルの変更を復元しました");
+        } else {
+          setNote({
+            id: data.note.id,
+            title: useLocal && localNote ? localNote.title : data.note.title,
+            content: useLocal && localNote ? localNote.content : serverContent,
+            tags: useLocal && localNote ? localNote.tags : (data.note.tags || []),
+          });
+          setSelectedFolderId(data.note.folder_path_id);
+          initialFolderIdRef.current = data.note.folder_path_id;
+          setSyncStatus(useLocal ? "idle" : "synced");
+
+          if (useLocal && localNote) {
+            hasUnsyncedChanges.current = true;
+            toast.info("ローカルの変更を復元しました");
+          }
         }
       } else {
         // Note not found (may have been deleted)
@@ -467,11 +545,15 @@ export default function EditorContent() {
     }
   }, [note, selectedFolderId]);
 
-  // Save to Supabase with 3 second debounce
+  // Save to Supabase with 3 second debounce (with optimistic locking)
   const saveToCloud = useCallback(async () => {
     if (!note.id || !isOnline) return;
 
     try {
+      // Get current syncedAt for optimistic locking
+      const localNote = await getLocalNote(note.id);
+      const expectedUpdatedAt = localNote?.syncedAt || 0;
+
       const response = await fetch(`/api/notes/${note.id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
@@ -479,9 +561,22 @@ export default function EditorContent() {
           title: note.title,
           content: note.content,
           tags: note.tags,
-          saveToDbOnly: true, // Only save to Supabase, not GitHub
+          saveToDbOnly: true,
+          expected_updated_at: expectedUpdatedAt > 0 ? expectedUpdatedAt : undefined,
         }),
       });
+
+      if (response.status === 409) {
+        // Conflict detected - another device updated the note
+        console.log('[SYNC] Optimistic lock conflict on saveToCloud');
+        const data = await response.json();
+        if (data.serverNote) {
+          setRemoteContent(data.serverNote.content || '');
+          setSyncStatus("conflict");
+          setShowConflictModal(true);
+        }
+        return;
+      }
 
       if (response.ok) {
         const data = await response.json();
@@ -489,6 +584,14 @@ export default function EditorContent() {
         // Use server's updated_at to track which version we've synced to
         const serverUpdatedAt = new Date(data.note?.updated_at || Date.now()).getTime();
         await markNoteSynced(note.id, serverUpdatedAt);
+
+        // Notify other tabs of the save
+        broadcastChannelRef.current?.postMessage({
+          type: 'NOTE_SAVED',
+          noteId: note.id,
+          tabId: tabIdRef.current,
+          content: note.content,
+        });
       }
     } catch (error) {
       console.error("Failed to save to cloud:", error);

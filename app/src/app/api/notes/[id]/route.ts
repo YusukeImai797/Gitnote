@@ -102,7 +102,7 @@ export async function PUT(
   try {
     const { id } = await params;
     const body = await request.json();
-    const { title, content, tags = [], saveToDbOnly = false } = body;
+    const { title, content, tags = [], saveToDbOnly = false, expected_updated_at } = body;
 
     console.log('[SYNC] PUT request received:', {
       noteId: id,
@@ -110,6 +110,7 @@ export async function PUT(
       titleLength: title?.length || 0,
       contentLength: content?.length || 0,
       tagsCount: tags.length,
+      expected_updated_at,
     });
 
     const supabase = getServiceSupabase();
@@ -151,6 +152,22 @@ export async function PUT(
 
     // If saveToDbOnly, just update the database without GitHub commit
     if (saveToDbOnly) {
+      // Optimistic locking: check if server was updated since client's last sync
+      if (expected_updated_at) {
+        const currentServerUpdatedAt = new Date(note.updated_at || 0).getTime();
+        if (currentServerUpdatedAt > expected_updated_at) {
+          console.log('[SYNC] Optimistic lock conflict:', {
+            expected: expected_updated_at,
+            actual: currentServerUpdatedAt,
+          });
+          return NextResponse.json({
+            error: 'Conflict detected',
+            status: 'conflict',
+            serverNote: note,
+          }, { status: 409 });
+        }
+      }
+
       const { data: updatedNote, error: updateError } = await supabase
         .from('notes')
         .update({
