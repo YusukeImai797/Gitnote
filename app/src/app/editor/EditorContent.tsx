@@ -109,14 +109,13 @@ export default function EditorContent() {
       if (!note.id || (!note.title && !note.content)) return;
 
       try {
-        // Save to IndexedDB with current timestamp
+        // Save to IndexedDB (preserves existing syncedAt)
         await saveLocalNote({
           id: note.id,
           title: note.title,
           content: note.content,
           tags: note.tags,
           folderPathId: selectedFolderId,
-          syncedAt: 0, // Will be updated after cloud save succeeds
         });
 
         // Also save to cloud if online
@@ -326,28 +325,48 @@ export default function EditorContent() {
           // Compare actual content to detect meaningful differences
           const contentDiffers = localNote.content !== serverContent;
 
+          // Debug logging for multi-device sync
+          console.log('[SYNC] loadNote decision:', {
+            noteId: id,
+            localSyncedAt: localNote.syncedAt,
+            localUpdatedAt: localNote.updatedAt,
+            serverUpdatedAt,
+            cacheIsStale,
+            hasLocalEdits,
+            contentDiffers,
+            localContentPreview: localNote.content?.substring(0, 50),
+            serverContentPreview: serverContent?.substring(0, 50),
+          });
+
           if (cacheIsStale && !hasLocalEdits) {
             // Server is newer, no local edits - use server, update cache
+            console.log('[SYNC] Decision: Use server (cache stale, no local edits)');
             useLocal = false;
             await markNoteSynced(id, serverUpdatedAt);
           } else if (hasLocalEdits && !cacheIsStale) {
             // Local has edits, server unchanged - use local
+            console.log('[SYNC] Decision: Use local (has edits, cache fresh)');
             useLocal = true;
           } else if (hasLocalEdits && cacheIsStale) {
             // True conflict: both have changes
             if (contentDiffers) {
               // Show conflict warning, prefer local for now (user can manually sync)
+              console.log('[SYNC] Decision: Use local (conflict - both changed)');
               toast.warning("他のデバイスで変更がありました。ローカルの変更を保持しています。");
               useLocal = true;
             } else {
               // Content is the same despite timestamp differences - no real conflict
+              console.log('[SYNC] Decision: Use server (content same)');
               useLocal = false;
               await markNoteSynced(id, serverUpdatedAt);
             }
           } else {
             // No local edits, cache is fresh - use server (normal case)
+            console.log('[SYNC] Decision: Use server (normal case)');
             useLocal = false;
           }
+        } else {
+          console.log('[SYNC] No local note found, using server');
         }
 
         setNote({
@@ -387,13 +406,13 @@ export default function EditorContent() {
     if (!note.id) return;
 
     try {
+      // Don't pass syncedAt - let saveLocalNote preserve existing value
       await saveLocalNote({
         id: note.id,
         title: note.title,
         content: note.content,
         tags: note.tags,
         folderPathId: selectedFolderId,
-        syncedAt: 0, // Will be updated when synced to cloud
       });
     } catch (error) {
       console.error("Failed to save to IndexedDB:", error);
@@ -668,7 +687,6 @@ export default function EditorContent() {
                     content: note.content,
                     tags: note.tags,
                     folderPathId: selectedFolderId,
-                    syncedAt: 0,
                   });
                   if (isOnline) {
                     const response = await fetch(`/api/notes/${note.id}`, {

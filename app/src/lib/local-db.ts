@@ -23,9 +23,12 @@ class GitnoteDB extends Dexie {
 
 export const db = new GitnoteDB();
 
-// Save note to IndexedDB
+// Save note to IndexedDB (preserves existing syncedAt unless explicitly provided)
 export async function saveLocalNote(note: Partial<LocalNote> & { id: string }): Promise<void> {
+    const existing = await db.notes.get(note.id);
     await db.notes.put({
+        // Preserve existing syncedAt if not explicitly provided
+        syncedAt: existing?.syncedAt ?? 0,
         ...note,
         updatedAt: Date.now(),
     } as LocalNote);
