@@ -46,31 +46,31 @@ export const authOptions: AuthOptions = {
       try {
         const supabase = getServiceSupabase();
 
-        // 1. Check if user exists by provider_id
+        // 1. Check if user exists by github_user_id (Legacy Schema)
+        // Schema mismatch detected: provider_id does not exist. Using github_user_id.
         const { data: users, error: searchError } = await supabase
           .from('users')
           .select('id, email')
-          .eq('provider_id', account.providerAccountId)
-          .eq('provider', 'github')
+          .eq('github_user_id', parseInt(account.providerAccountId, 10))
           .limit(1);
 
         if (searchError) {
           console.error('[AUTH] Error searching user:', searchError);
+          // If github_user_id also doesn't exist, this will fail.
           return false;
         }
 
         const existingUser = users?.[0];
 
         if (existingUser) {
-          // 2. User exists - update details (only name, not email to avoid conflicts)
+          // 2. User exists - update details
           console.log('[AUTH] User exists, updating:', existingUser.id);
 
           const { error: updateError } = await supabase
             .from('users')
             .update({
+              email: email, // Update email if changed
               name: user.name,
-              // Note: Don't update email here to avoid UNIQUE constraint errors
-              // if another user already has that email
             })
             .eq('id', existingUser.id);
 
@@ -79,7 +79,7 @@ export const authOptions: AuthOptions = {
             return false;
           }
         } else {
-          // 3. User does not exist by provider_id - check by email to link accounts
+          // 3. User does not exist by github_user_id - check by email to link accounts
           const { data: emailUsers, error: emailSearchError } = await supabase
             .from('users')
             .select('id')
@@ -94,13 +94,12 @@ export const authOptions: AuthOptions = {
           const emailUser = emailUsers?.[0];
 
           if (emailUser) {
-            // Link existing email user to this provider
+            // Link existing email user to this GitHub account
             console.log('[AUTH] Linking existing email user:', emailUser.id);
             const { error: linkError } = await supabase
               .from('users')
               .update({
-                provider: 'github',
-                provider_id: account.providerAccountId,
+                github_user_id: parseInt(account.providerAccountId, 10),
                 name: user.name,
               })
               .eq('id', emailUser.id);
@@ -111,14 +110,14 @@ export const authOptions: AuthOptions = {
             }
           } else {
             // 4. Create new user
-            console.log('[AUTH] Creating new user');
+            console.log('[AUTH] Creating new user (Legacy Schema)');
             const { error: insertError } = await supabase
               .from('users')
               .insert({
-                provider: 'github',
-                provider_id: account.providerAccountId,
+                github_user_id: parseInt(account.providerAccountId, 10),
                 email: email,
                 name: user.name
+                // Removing 'provider' field as it likely doesn't exist either
               });
 
             if (insertError) {
