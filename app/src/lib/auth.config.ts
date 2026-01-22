@@ -12,15 +12,35 @@ export const authOptions: AuthOptions = {
           // Required scopes for repository access:
           // - repo: Full control of private repositories (read/write)
           // - read:user: Read user profile data
-          scope: "repo read:user",
+          // - user:email: Access user email addresses (even if private)
+          scope: "repo read:user user:email",
         },
       },
     }),
   ],
   session: { strategy: "jwt" },
   callbacks: {
-    async signIn({ user, account }) {
-      if (!account || !user.email) return false;
+    async signIn({ user, account, profile }) {
+      console.log('[AUTH] signIn callback started:', {
+        hasAccount: !!account,
+        hasUser: !!user,
+        userId: user?.id,
+        userEmail: user?.email,
+        userName: user?.name,
+        providerAccountId: account?.providerAccountId,
+        profileEmail: (profile as { email?: string })?.email,
+      });
+
+      if (!account) {
+        console.error('[AUTH] No account provided');
+        return false;
+      }
+
+      // Email can be null for users with private email settings
+      // Use profile email as fallback, or generate a placeholder email using GitHub ID
+      const email = user.email ||
+        (profile as { email?: string })?.email ||
+        `${account.providerAccountId}@users.noreply.github.com`;
 
       try {
         const supabase = getServiceSupabase();
@@ -28,7 +48,7 @@ export const authOptions: AuthOptions = {
         console.log('[AUTH] Attempting to upsert user:', {
           provider: 'github',
           provider_id: account.providerAccountId,
-          email: user.email,
+          email: email,
           name: user.name,
         });
 
@@ -38,7 +58,7 @@ export const authOptions: AuthOptions = {
           .upsert({
             provider: 'github',
             provider_id: account.providerAccountId,
-            email: user.email,
+            email: email,
             name: user.name,
           }, {
             onConflict: 'email'
