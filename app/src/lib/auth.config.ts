@@ -26,7 +26,8 @@ export const authOptions: AuthOptions = {
         const supabase = getServiceSupabase();
 
         console.log('[AUTH] Attempting to upsert user:', {
-          github_user_id: account.providerAccountId,
+          provider: 'github',
+          provider_id: account.providerAccountId,
           email: user.email,
           name: user.name,
         });
@@ -35,11 +36,12 @@ export const authOptions: AuthOptions = {
         const { data, error } = await supabase
           .from('users')
           .upsert({
-            github_user_id: parseInt(account.providerAccountId, 10),
+            provider: 'github',
+            provider_id: account.providerAccountId,
             email: user.email,
             name: user.name,
           }, {
-            onConflict: 'github_user_id'
+            onConflict: 'email'
           })
           .select();
 
