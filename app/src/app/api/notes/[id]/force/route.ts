@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getServerSession } from 'next-auth';
 import { authOptions } from '@/lib/auth.config';
 import { getServiceSupabase } from '@/lib/supabase';
-import { getOctokitForInstallation } from '@/lib/github';
+import { getOctokitForUser } from '@/lib/github';
 
 // PUT /api/notes/:id/force - Force overwrite a note (ignore conflict)
 export async function PUT(
@@ -11,9 +11,11 @@ export async function PUT(
 ) {
     const session = await getServerSession(authOptions);
 
-    if (!session?.user?.email) {
+    if (!session?.user?.email || !session.accessToken) {
         return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
+
+    const accessToken = session.accessToken as string;
 
     try {
         const { id } = await params;
@@ -58,7 +60,7 @@ export async function PUT(
         }
 
         // Get current file SHA from GitHub (to force update)
-        const octokit = getOctokitForInstallation(Number(repoConnection.github_installation_id));
+        const octokit = getOctokitForUser(accessToken);
         const [owner, repo] = repoConnection.repo_full_name.split('/');
 
         let currentSha: string;

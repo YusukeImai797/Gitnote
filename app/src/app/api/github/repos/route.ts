@@ -1,9 +1,9 @@
 import { NextResponse } from 'next/server';
 import { getServerSession } from 'next-auth';
 import { authOptions } from '@/lib/auth.config';
-import { getOctokitForInstallation } from '@/lib/github';
+import { Octokit } from '@octokit/rest';
 
-// Get list of accessible repositories
+// Get list of accessible repositories for the authenticated user
 export async function GET() {
   const session = await getServerSession(authOptions);
 
@@ -11,21 +11,27 @@ export async function GET() {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
+  // Get user's GitHub OAuth token from session
+  const accessToken = session.accessToken;
+
+  if (!accessToken) {
+    return NextResponse.json({ error: 'GitHub access token not found in session' }, { status: 401 });
+  }
+
   try {
-    const installationId = process.env.GITHUB_APP_INSTALLATION_ID;
-
-    if (!installationId) {
-      return NextResponse.json({ error: 'GitHub App not installed' }, { status: 400 });
-    }
-
-    const octokit = getOctokitForInstallation(Number(installationId));
-
-    // Get all repositories accessible by this installation
-    const { data } = await octokit.apps.listReposAccessibleToInstallation({
-      per_page: 100,
+    // Initialize Octokit with user's OAuth token
+    const octokit = new Octokit({
+      auth: accessToken,
     });
 
-    const repos = data.repositories.map(repo => ({
+    // Get repositories for the authenticated user
+    const { data } = await octokit.repos.listForAuthenticatedUser({
+      per_page: 100,
+      sort: 'updated',
+      direction: 'desc',
+    });
+
+    const repos = data.map(repo => ({
       id: repo.id,
       name: repo.name,
       fullName: repo.full_name,
@@ -37,6 +43,12 @@ export async function GET() {
     return NextResponse.json({ repos });
   } catch (error) {
     console.error('Error fetching repositories:', error);
+
+    // Handle specific OAuth errors
+    if (error instanceof Error && error.message.includes('Bad credentials')) {
+      return NextResponse.json({ error: 'GitHub token expired or invalid. Please sign in again.' }, { status: 401 });
+    }
+
     return NextResponse.json({ error: 'Failed to fetch repositories' }, { status: 500 });
   }
 }

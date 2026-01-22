@@ -2,14 +2,16 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getServerSession } from 'next-auth';
 import { authOptions } from '@/lib/auth.config';
 import { getServiceSupabase } from '@/lib/supabase';
-import { getOctokitForInstallation } from '@/lib/github';
+import { getOctokitForUser } from '@/lib/github';
 
 export async function POST(request: NextRequest) {
   const session = await getServerSession(authOptions);
 
-  if (!session?.user?.email) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  if (!session?.user?.email || !session.accessToken) {
+    return NextResponse.json({ error: 'Unauthorized - missing access token' }, { status: 401 });
   }
+
+  const accessToken = session.accessToken as string;
 
   try {
     const body = await request.json();
@@ -32,24 +34,23 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'User not found' }, { status: 404 });
     }
 
-    // Get installation_id from environment
-    const installationId = process.env.GITHUB_APP_INSTALLATION_ID;
-
-    if (!installationId) {
-      return NextResponse.json({ error: 'GitHub App not configured' }, { status: 500 });
-    }
-
-    // Verify access to the repository
-    const octokit = getOctokitForInstallation(Number(installationId));
+    // Verify access to the repository using user's OAuth token
+    const octokit = getOctokitForUser(accessToken);
     const [owner, repo] = repoFullName.split('/');
 
     try {
       await octokit.repos.get({ owner, repo });
-    } catch (error) {
-      return NextResponse.json({ error: 'Cannot access repository. Make sure the GitHub App has access.' }, { status: 403 });
+    } catch (error: any) {
+      if (error.status === 401) {
+        return NextResponse.json({ error: 'GitHub token expired. Please sign in again.' }, { status: 401 });
+      }
+      if (error.status === 404) {
+        return NextResponse.json({ error: 'Repository not found or you do not have access.' }, { status: 404 });
+      }
+      return NextResponse.json({ error: 'Cannot access repository.' }, { status: 403 });
     }
 
-    // Upsert repo connection
+    // Upsert repo connection (no longer need github_installation_id)
     const { error: upsertError } = await supabase
       .from('repo_connections')
       .upsert({
@@ -58,7 +59,6 @@ export async function POST(request: NextRequest) {
         repo_full_name: repoFullName,
         default_branch: defaultBranch || 'main',
         base_path: basePath || '',
-        github_installation_id: parseInt(installationId),
         status: 'active',
       }, {
         onConflict: 'user_id,repo_full_name'

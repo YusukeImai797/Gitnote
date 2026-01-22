@@ -2,15 +2,17 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getServerSession } from 'next-auth';
 import { authOptions } from '@/lib/auth.config';
 import { getServiceSupabase } from '@/lib/supabase';
-import { getOctokitForInstallation } from '@/lib/github';
+import { getOctokitForUser } from '@/lib/github';
 
 // GET /api/folders - List all folder paths with aliases
 export async function GET(request: NextRequest) {
     const session = await getServerSession(authOptions);
 
-    if (!session?.user?.email) {
+    if (!session?.user?.email || !session.accessToken) {
         return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
+
+    const accessToken = session.accessToken as string;
 
     try {
         const supabase = getServiceSupabase();
@@ -59,7 +61,7 @@ export async function GET(request: NextRequest) {
         if (foldersError || !folders || folders.length === 0) {
             try {
                 const scannedPaths = await Promise.race([
-                    scanRepositoryPaths(repoConnection),
+                    scanRepositoryPaths(repoConnection, accessToken),
                     new Promise<string[]>((_, reject) =>
                         setTimeout(() => reject(new Error('Repository scan timeout')), 10000)
                     )
@@ -100,7 +102,7 @@ export async function GET(request: NextRequest) {
 export async function POST(request: NextRequest) {
     const session = await getServerSession(authOptions);
 
-    if (!session?.user?.email) {
+    if (!session?.user?.email || !session.accessToken) {
         return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
@@ -173,9 +175,9 @@ export async function POST(request: NextRequest) {
 }
 
 // Helper function to scan repository for paths
-async function scanRepositoryPaths(repoConnection: { github_installation_id: number; repo_full_name: string; default_branch: string }): Promise<string[]> {
+async function scanRepositoryPaths(repoConnection: { github_installation_id: number; repo_full_name: string; default_branch: string }, accessToken: string): Promise<string[]> {
     try {
-        const octokit = getOctokitForInstallation(repoConnection.github_installation_id);
+        const octokit = getOctokitForUser(accessToken);
         const [owner, repo] = repoConnection.repo_full_name.split('/');
 
         const { data: tree } = await octokit.git.getTree({

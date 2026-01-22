@@ -4,6 +4,10 @@ import { Octokit } from '@octokit/rest';
 const appId = process.env.GITHUB_APP_ID!;
 const privateKey = process.env.GITHUB_APP_PRIVATE_KEY!.replace(/\\n/g, '\n');
 
+/**
+ * Get Octokit instance using GitHub App Installation ID
+ * @deprecated Use getOctokitForUser for multi-user support
+ */
 export function getOctokitForInstallation(installationId: number) {
   const octokit = new Octokit({
     authStrategy: createAppAuth,
@@ -12,6 +16,18 @@ export function getOctokitForInstallation(installationId: number) {
       privateKey,
       installationId,
     },
+  });
+
+  return octokit;
+}
+
+/**
+ * Get Octokit instance using user's OAuth access token
+ * This allows each user to access their own repositories
+ */
+export function getOctokitForUser(accessToken: string) {
+  const octokit = new Octokit({
+    auth: accessToken,
   });
 
   return octokit;

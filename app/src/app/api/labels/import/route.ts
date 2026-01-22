@@ -6,9 +6,11 @@ import { getServiceSupabase } from '@/lib/supabase';
 export async function POST(request: NextRequest) {
   const session = await getServerSession(authOptions);
 
-  if (!session?.user?.email) {
+  if (!session?.user?.email || !session.accessToken) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
+
+  const accessToken = session.accessToken as string;
 
   try {
     const body = await request.json();
@@ -44,8 +46,8 @@ export async function POST(request: NextRequest) {
     }
 
     // Get GitHub labels
-    const { getOctokitForInstallation } = await import('@/lib/github');
-    const octokit = getOctokitForInstallation(repoConnection.github_installation_id);
+    const { getOctokitForUser } = await import('@/lib/github');
+    const octokit = getOctokitForUser(accessToken);
     const [owner, repo] = repoConnection.repo_full_name.split('/');
 
     const { data: allLabels } = await octokit.issues.listLabelsForRepo({

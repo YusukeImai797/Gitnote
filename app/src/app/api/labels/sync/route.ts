@@ -2,15 +2,17 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getServerSession } from 'next-auth';
 import { authOptions } from '@/lib/auth.config';
 import { getServiceSupabase } from '@/lib/supabase';
-import { getOctokitForInstallation } from '@/lib/github';
+import { getOctokitForUser } from '@/lib/github';
 
 // POST /api/labels/sync - Sync labels from GitHub
 export async function POST(request: NextRequest) {
   const session = await getServerSession(authOptions);
 
-  if (!session?.user?.email) {
+  if (!session?.user?.email || !session.accessToken) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
+
+  const accessToken = session.accessToken as string;
 
   try {
     const supabase = getServiceSupabase();
@@ -39,7 +41,7 @@ export async function POST(request: NextRequest) {
     }
 
     // Fetch labels from GitHub
-    const octokit = getOctokitForInstallation(repoConnection.github_installation_id);
+    const octokit = getOctokitForUser(accessToken);
     const [owner, repo] = repoConnection.repo_full_name.split('/');
 
     const { data: githubLabels } = await octokit.issues.listLabelsForRepo({

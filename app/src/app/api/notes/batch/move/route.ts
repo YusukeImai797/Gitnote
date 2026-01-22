@@ -2,15 +2,17 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getServerSession } from 'next-auth';
 import { authOptions } from '@/lib/auth.config';
 import { getServiceSupabase } from '@/lib/supabase';
-import { getOctokitForInstallation } from '@/lib/github';
+import { getOctokitForUser } from '@/lib/github';
 
 // PUT /api/notes/batch/move - Move multiple notes to a folder
 export async function PUT(request: NextRequest) {
     const session = await getServerSession(authOptions);
 
-    if (!session?.user?.email) {
+    if (!session?.user?.email || !session.accessToken) {
         return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
+
+    const accessToken = session.accessToken as string;
 
     try {
         const body = await request.json();
@@ -72,7 +74,7 @@ export async function PUT(request: NextRequest) {
             return NextResponse.json({ error: 'Failed to fetch notes' }, { status: 500 });
         }
 
-        const octokit = getOctokitForInstallation(repoConnection.github_installation_id);
+        const octokit = getOctokitForUser(accessToken);
         const [owner, repo] = repoConnection.repo_full_name.split('/');
 
         const results = {

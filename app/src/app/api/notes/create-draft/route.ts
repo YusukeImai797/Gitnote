@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getServerSession } from 'next-auth';
 import { authOptions } from '@/lib/auth.config';
 import { getServiceSupabase } from '@/lib/supabase';
-import { getOctokitForInstallation } from '@/lib/github';
+import { getOctokitForUser } from '@/lib/github';
 
 const DEFAULT_TITLE = 'Untitled Note';
 
@@ -10,9 +10,11 @@ const DEFAULT_TITLE = 'Untitled Note';
 export async function POST(request: NextRequest) {
     const session = await getServerSession(authOptions);
 
-    if (!session?.user?.email) {
-        return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    if (!session?.user?.email || !session.accessToken) {
+        return NextResponse.json({ error: 'Unauthorized - missing access token' }, { status: 401 });
     }
+
+    const accessToken = session.accessToken as string;
 
     try {
         const body = await request.json().catch(() => ({}));
@@ -92,20 +94,73 @@ export async function POST(request: NextRequest) {
 
         const fullContent = frontMatter + '\n';
 
-        // Create file on GitHub
-        const octokit = getOctokitForInstallation(repoConnection.github_installation_id);
+        // Create file on GitHub using user's OAuth token
+        const octokit = getOctokitForUser(accessToken);
         const [owner, repo] = repoConnection.repo_full_name.split('/');
 
-        const { data: fileData } = await octokit.repos.createOrUpdateFileContents({
+        console.log('[CREATE-DRAFT] Creating file on GitHub:', {
             owner,
             repo,
             path: filePath,
-            message: `Create note: ${DEFAULT_TITLE}`,
-            content: Buffer.from(fullContent).toString('base64'),
             branch: repoConnection.default_branch,
+            targetPath,
+            folderPathId,
         });
 
-        // Save note to database
+        let fileData;
+        try {
+            const response = await octokit.repos.createOrUpdateFileContents({
+                owner,
+                repo,
+                path: filePath,
+                message: `Create note: ${DEFAULT_TITLE}`,
+                content: Buffer.from(fullContent).toString('base64'),
+                branch: repoConnection.default_branch,
+            });
+            fileData = response.data;
+            console.log('[CREATE-DRAFT] File created successfully:', {
+                sha: fileData.commit?.sha,
+                path: filePath,
+            });
+        } catch (githubError: any) {
+            console.error('[CREATE-DRAFT] GitHub API error:', {
+                status: githubError.status,
+                message: githubError.message,
+                response: githubError.response?.data,
+                path: filePath,
+            });
+
+            // Provide specific error messages based on status
+            if (githubError.status === 404) {
+                return NextResponse.json({
+                    error: 'Repository not found or no access. Please reconnect your repository.',
+                    details: githubError.message,
+                    code: 'REPO_NOT_FOUND'
+                }, { status: 404 });
+            }
+            if (githubError.status === 422) {
+                return NextResponse.json({
+                    error: 'Failed to create file. The repository might have issues.',
+                    details: githubError.message,
+                    code: 'UNPROCESSABLE_ENTITY'
+                }, { status: 422 });
+            }
+            if (githubError.status === 403) {
+                return NextResponse.json({
+                    error: 'Permission denied. The GitHub App may need additional permissions.',
+                    details: githubError.message,
+                    code: 'PERMISSION_DENIED'
+                }, { status: 403 });
+            }
+
+            return NextResponse.json({
+                error: 'Failed to create file on GitHub',
+                details: githubError.message,
+                code: 'GITHUB_API_ERROR'
+            }, { status: 500 });
+        }
+
+        // Save note to database (with content field initialized)
         const { data: note, error: noteError } = await supabase
             .from('notes')
             .insert({
@@ -113,6 +168,7 @@ export async function POST(request: NextRequest) {
                 repo_connection_id: repoConnection.id,
                 folder_path_id: folderPathId,
                 title: DEFAULT_TITLE,
+                content: '',  // Initialize content field for new drafts
                 path: filePath,
                 tags: [],
                 word_count: 0,
@@ -128,8 +184,16 @@ export async function POST(request: NextRequest) {
         }
 
         return NextResponse.json({ note, folder_path_id: folderPathId });
-    } catch (error) {
-        console.error('Error in POST /api/notes/create-draft:', error);
-        return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
+    } catch (error: any) {
+        console.error('[CREATE-DRAFT] Unexpected error:', {
+            message: error.message,
+            stack: error.stack,
+            status: error.status,
+        });
+        return NextResponse.json({
+            error: 'Internal server error',
+            details: error.message,
+            code: 'INTERNAL_ERROR'
+        }, { status: 500 });
     }
 }

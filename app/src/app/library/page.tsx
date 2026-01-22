@@ -263,7 +263,7 @@ export default function LibraryPage() {
                 <span className="material-symbols-outlined text-[22px] text-muted-foreground">home</span>
               </button>
               <button
-                onClick={() => router.push("/editor")}
+                onClick={() => router.push("/editor?new=true")}
                 className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-primary text-primary-foreground font-semibold shadow-sm hover:opacity-90 transition-all active:scale-[0.98]"
               >
                 <span className="material-symbols-outlined text-[20px]">add</span>
@@ -419,7 +419,7 @@ export default function LibraryPage() {
             </p>
             {!searchQuery && !selectedTag && (
               <button
-                onClick={() => router.push("/editor")}
+                onClick={() => router.push("/editor?new=true")}
                 className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-primary text-primary-foreground font-semibold shadow-sm hover:opacity-90 transition-all active:scale-[0.98]"
               >
                 <span className="material-symbols-outlined text-[20px]">edit_note</span>

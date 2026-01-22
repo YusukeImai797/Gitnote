@@ -2,11 +2,12 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getServerSession } from 'next-auth';
 import { authOptions } from '@/lib/auth.config';
 import { getServiceSupabase } from '@/lib/supabase';
-import { getOctokitForInstallation } from '@/lib/github';
+import { getOctokitForUser } from '@/lib/github';
 
 // GET /api/notes/:id - Get a specific note
+// Optimized: Returns Supabase content immediately without waiting for GitHub
 export async function GET(
-  request: NextRequest,
+  _request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
   const session = await getServerSession(authOptions);
@@ -30,7 +31,7 @@ export async function GET(
       return NextResponse.json({ error: 'User not found' }, { status: 404 });
     }
 
-    // Get note
+    // Get note with content from Supabase (fast, no GitHub API call)
     const { data: note, error: noteError } = await supabase
       .from('notes')
       .select('*')
@@ -42,46 +43,12 @@ export async function GET(
       return NextResponse.json({ error: 'Note not found' }, { status: 404 });
     }
 
-    // Get repo connection
-    const { data: repoConnection } = await supabase
-      .from('repo_connections')
-      .select('*')
-      .eq('user_id', user.id)
-      .eq('status', 'active')
-      .single();
-
-    if (!repoConnection) {
-      return NextResponse.json({ note, content: '' });
-    }
-
-    // Fetch content from GitHub
-    try {
-      const octokit = getOctokitForInstallation(repoConnection.github_installation_id);
-      const [owner, repo] = repoConnection.repo_full_name.split('/');
-
-      const { data: fileData } = await octokit.repos.getContent({
-        owner,
-        repo,
-        path: note.path,
-        ref: repoConnection.default_branch,
-      });
-
-      if ('content' in fileData) {
-        const content = Buffer.from(fileData.content, 'base64').toString('utf-8');
-
-        // Remove front matter
-        const contentWithoutFrontMatter = content.replace(/^---\n[\s\S]*?\n---\n\n?/, '');
-
-        return NextResponse.json({
-          note,
-          content: contentWithoutFrontMatter,
-        });
-      }
-    } catch (error) {
-      console.error('Error fetching content from GitHub:', error);
-    }
-
-    return NextResponse.json({ note, content: '' });
+    // Return Supabase content immediately (no GitHub fetch for faster UX)
+    // GitHub sync happens on save, not on load
+    return NextResponse.json({
+      note,
+      content: note.content || '',
+    });
   } catch (error) {
     console.error('Error in GET /api/notes/:id:', error);
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
@@ -95,9 +62,11 @@ export async function PUT(
 ) {
   const session = await getServerSession(authOptions);
 
-  if (!session?.user?.email) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  if (!session?.user?.email || !session.accessToken) {
+    return NextResponse.json({ error: 'Unauthorized - missing access token' }, { status: 401 });
   }
+
+  const accessToken = session.accessToken as string;
 
   try {
     const { id } = await params;
@@ -236,8 +205,8 @@ export async function PUT(
 
     const fullContent = frontMatter + content;
 
-    // Update on GitHub
-    const octokit = getOctokitForInstallation(repoConnection.github_installation_id);
+    // Update on GitHub using user's OAuth token
+    const octokit = getOctokitForUser(accessToken);
     const [owner, repo] = repoConnection.repo_full_name.split('/');
 
     // Always get the latest file state from GitHub to detect conflicts
@@ -322,20 +291,92 @@ export async function PUT(
           sha = currentSha;
         }
       }
-    } catch (error) {
-      console.log('[SYNC] File does not exist yet, creating new file');
-      // File doesn't exist yet, that's fine for new notes
+    } catch (error: any) {
+      // Check if it's a 404 (file doesn't exist) - that's normal for new files
+      if (error.status === 404) {
+        console.log('[SYNC] File does not exist yet (404), will create new file:', {
+          path: note.path,
+        });
+        // sha stays undefined, which tells createOrUpdateFileContents to create new file
+      } else {
+        // Other errors should be logged and handled
+        console.error('[SYNC] Error fetching file from GitHub:', {
+          status: error.status,
+          message: error.message,
+          path: note.path,
+        });
+        // Continue anyway - we'll try to create/update the file
+      }
     }
 
-    const { data: fileData } = await octokit.repos.createOrUpdateFileContents({
-      owner,
-      repo,
+    console.log('[SYNC] Creating/updating file on GitHub:', {
       path: note.path,
-      message: sha ? `Update note: ${title || note.title}` : `Create note: ${title || note.title}`,
-      content: Buffer.from(fullContent).toString('base64'),
+      hasSha: !!sha,
+      sha: sha?.substring(0, 7),
       branch: repoConnection.default_branch,
-      ...(sha ? { sha } : {}),
     });
+
+    let fileData;
+    try {
+      const response = await octokit.repos.createOrUpdateFileContents({
+        owner,
+        repo,
+        path: note.path,
+        message: sha ? `Update note: ${title || note.title}` : `Create note: ${title || note.title}`,
+        content: Buffer.from(fullContent).toString('base64'),
+        branch: repoConnection.default_branch,
+        ...(sha ? { sha } : {}),
+      });
+      fileData = response.data;
+      console.log('[SYNC] File created/updated successfully:', {
+        commitSha: fileData.commit?.sha?.substring(0, 7),
+        path: note.path,
+      });
+    } catch (githubError: any) {
+      console.error('[SYNC] GitHub createOrUpdateFileContents error:', {
+        status: githubError.status,
+        message: githubError.message,
+        response: githubError.response?.data,
+        path: note.path,
+        hasSha: !!sha,
+      });
+
+      // Provide specific error messages
+      if (githubError.status === 409) {
+        return NextResponse.json({
+          error: 'Conflict detected - file was modified',
+          status: 'conflict',
+          code: 'GITHUB_CONFLICT'
+        }, { status: 409 });
+      }
+      if (githubError.status === 404) {
+        return NextResponse.json({
+          error: 'Repository or branch not found. Please check your repository connection.',
+          details: githubError.message,
+          code: 'REPO_NOT_FOUND'
+        }, { status: 404 });
+      }
+      if (githubError.status === 422) {
+        return NextResponse.json({
+          error: 'Failed to save file. The file path may be invalid.',
+          details: githubError.message,
+          code: 'UNPROCESSABLE_ENTITY'
+        }, { status: 422 });
+      }
+      if (githubError.status === 403) {
+        return NextResponse.json({
+          error: 'Permission denied. The GitHub App may need additional permissions.',
+          details: githubError.message,
+          code: 'PERMISSION_DENIED'
+        }, { status: 403 });
+      }
+
+      return NextResponse.json({
+        error: 'Failed to save file to GitHub',
+        details: githubError.message,
+        code: 'GITHUB_API_ERROR'
+      }, { status: 500 });
+    }
 
     // Update note metadata
     const { data: updatedNote, error: updateError } = await supabase
@@ -359,13 +400,25 @@ export async function PUT(
 
     return NextResponse.json({ note: updatedNote, status: 'synced' });
   } catch (error: any) {
-    console.error('Error in PUT /api/notes/:id:', error);
+    console.error('[SYNC] Unexpected error in PUT /api/notes/:id:', {
+      message: error.message,
+      stack: error.stack?.substring(0, 500),
+      status: error.status,
+    });
 
     // Check for conflict
     if (error.status === 409) {
-      return NextResponse.json({ error: 'Conflict detected', status: 'conflict' }, { status: 409 });
+      return NextResponse.json({
+        error: 'Conflict detected',
+        status: 'conflict',
+        code: 'CONFLICT'
+      }, { status: 409 });
     }
 
-    return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
+    return NextResponse.json({
+      error: 'Internal server error',
+      details: error.message,
+      code: 'INTERNAL_ERROR'
+    }, { status: 500 });
   }
 }

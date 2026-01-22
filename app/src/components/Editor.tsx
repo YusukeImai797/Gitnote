@@ -8,6 +8,7 @@ import Image from "@tiptap/extension-image";
 import TaskList from "@tiptap/extension-task-list";
 import TaskItem from "@tiptap/extension-task-item";
 import { useEffect, useCallback, useState, useRef } from "react";
+import { createPortal } from "react-dom";
 import { BLOCK_MENU_ITEMS, EDITOR_CONSTANTS, isMaterialIcon } from "@/constants/editor";
 import ImageUploadModal from "./ImageUploadModal";
 
@@ -133,6 +134,7 @@ function InputModal({
 }
 
 // Floating Block Menu component (mobile-friendly, appears near cursor)
+// Uses React Portal to render directly in document.body to avoid transform issues with fixed positioning
 function FloatingBlockMenu({
   isOpen,
   onClose,
@@ -144,9 +146,15 @@ function FloatingBlockMenu({
   onSelect: (type: string) => void;
   position: { top: number; left: number };
 }) {
-  if (!isOpen) return null;
+  const [mounted, setMounted] = useState(false);
 
-  return (
+  useEffect(() => {
+    setMounted(true);
+  }, []);
+
+  if (!isOpen || !mounted) return null;
+
+  const menuContent = (
     <>
       <div className="fixed inset-0 z-40" onClick={onClose} />
       <div
@@ -179,6 +187,8 @@ function FloatingBlockMenu({
       </div>
     </>
   );
+
+  return createPortal(menuContent, document.body);
 }
 
 export default function Editor({ content, onChange, placeholder = "Start writing..." }: EditorProps) {
@@ -201,6 +211,8 @@ export default function Editor({ content, onChange, placeholder = "Start writing
         heading: {
           levels: [1, 2, 3, 4],
         },
+        // Disable Link from StarterKit since we configure it separately below
+        link: false,
       }),
       Placeholder.configure({
         placeholder,

@@ -32,6 +32,7 @@ export default function EditorContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const noteId = searchParams.get("id");
+  const isNewNote = searchParams.get("new") === "true";
 
   const [note, setNote] = useState<Note>({
     title: "",
@@ -274,8 +275,17 @@ export default function EditorContent() {
           return;
         }
 
-        // When returning to foreground, check if server has newer content
+        // Simplified: Only sync server content if user has NO local changes
+        // This prevents annoying conflict modals while still keeping data fresh
         try {
+          const localNote = await getLocalNote(note.id);
+
+          // If user has unsynced local changes, don't fetch server (avoid conflict)
+          if (localNote && localNote.updatedAt > localNote.syncedAt) {
+            console.log('[SYNC] Visibility change: Has local changes, skipping server check');
+            return;
+          }
+
           const response = await fetch(`/api/notes/${note.id}`);
           if (!response.ok) return;
 
@@ -283,40 +293,13 @@ export default function EditorContent() {
           if (!data.note) return;
 
           const serverUpdatedAt = new Date(data.note.updated_at || 0).getTime();
-          const localNote = await getLocalNote(note.id);
-
           const serverContent = data.content || data.note.content || "";
 
-          if (localNote) {
-            const cacheIsStale = localNote.syncedAt < serverUpdatedAt;
-            const contentDiffers = localNote.content !== serverContent;
+          // Silently update to server content (user has no local changes)
+          if (!localNote || localNote.syncedAt < serverUpdatedAt) {
+            console.log('[SYNC] Visibility change: Updating to server content silently');
 
-            console.log('[SYNC] Visibility change check:', {
-              serverUpdatedAt,
-              localSyncedAt: localNote.syncedAt,
-              cacheIsStale,
-              contentDiffers,
-            });
-
-            if (!contentDiffers) {
-              // Content is the same - just update syncedAt silently
-              if (cacheIsStale) {
-                await markNoteSynced(note.id, serverUpdatedAt);
-              }
-            } else if (cacheIsStale) {
-              // Server updated AND content differs = conflict
-              console.log('[SYNC] Foreground: Conflict detected');
-              setRemoteContent(serverContent);
-              setSyncStatus("conflict");
-              setShowConflictModal(true);
-            } else {
-              // Content differs but server is not newer - local changes pending
-              // Do nothing, user's local changes take priority
-              console.log('[SYNC] Foreground: Local changes pending, keeping local');
-            }
-          } else {
-            // No local note - cache the server content
-            console.log('[SYNC] Visibility change: No local note, caching server content');
+            // Update IndexedDB
             await saveSyncedNote({
               id: note.id,
               title: data.note.title,
@@ -324,6 +307,17 @@ export default function EditorContent() {
               tags: data.note.tags || [],
               folderPathId: data.note.folder_path_id,
             }, serverUpdatedAt);
+
+            // Update UI if content differs
+            if (note.content !== serverContent) {
+              setNote(prev => ({
+                ...prev,
+                title: data.note.title,
+                content: serverContent,
+                tags: data.note.tags || [],
+              }));
+              toast.info("最新の内容を取得しました");
+            }
           }
         } catch (error) {
           console.error('[SYNC] Visibility check failed:', error);
@@ -415,8 +409,13 @@ export default function EditorContent() {
         if (!isLoadingNote.current) {
           await loadNote(noteId);
         }
+      } else if (isNewNote) {
+        // Explicitly creating a new note - skip lastOpenedNoteId restoration
+        if (!isCreatingDraft.current) {
+          await createNewDraft();
+        }
       } else {
-        // Check for last opened note or create new draft
+        // No explicit new note request - check for last opened note
         const lastNoteId = localStorage.getItem('lastOpenedNoteId');
         if (lastNoteId) {
           // Redirect to last opened note
@@ -429,7 +428,7 @@ export default function EditorContent() {
     };
 
     initializeNote();
-  }, [noteId, status]);
+  }, [noteId, isNewNote, status]);
 
   const createNewDraft = async () => {
     // Prevent re-entry
@@ -438,6 +437,7 @@ export default function EditorContent() {
 
     try {
       // Don't send folder_path_id - let API use default folder
+      console.log('[SYNC] createNewDraft: Starting...');
       const response = await fetch('/api/notes/create-draft', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -445,25 +445,71 @@ export default function EditorContent() {
       });
 
       if (!response.ok) {
-        throw new Error('Failed to create draft');
+        const errorData = await response.json().catch(() => ({}));
+        console.error('[SYNC] createNewDraft failed:', {
+          status: response.status,
+          statusText: response.statusText,
+          error: errorData.error,
+          details: errorData.details,
+          code: errorData.code,
+        });
+
+        // Show specific error message
+        let errorMessage = "ドラフトの作成に失敗しました";
+        if (errorData.code === 'REPO_NOT_FOUND') {
+          errorMessage = "リポジトリが見つかりません。再接続してください。";
+        } else if (errorData.code === 'PERMISSION_DENIED') {
+          errorMessage = "権限がありません。GitHub Appの設定を確認してください。";
+        } else if (errorData.code === 'GITHUB_API_ERROR') {
+          errorMessage = `GitHub APIエラー: ${errorData.details || '不明なエラー'}`;
+        } else if (errorData.details) {
+          errorMessage = `作成に失敗: ${errorData.details}`;
+        }
+
+        toast.error(errorMessage);
+        throw new Error(errorData.error || 'Failed to create draft');
       }
 
       const data = await response.json();
       if (data.note) {
-        setNote({
+        const newNote = {
           id: data.note.id,
           title: data.note.title || 'Untitled Note',
           content: data.note.content || '',
           tags: data.note.tags || [],
-        });
+        };
+
+        setNote(newNote);
         setSelectedFolderId(data.note.folder_path_id);
         initialFolderIdRef.current = data.note.folder_path_id;
+
+        // Save to IndexedDB immediately so auto-save can track changes
+        const serverUpdatedAt = new Date(data.note.updated_at || Date.now()).getTime();
+        await saveSyncedNote({
+          id: newNote.id,
+          title: newNote.title,
+          content: newNote.content,
+          tags: newNote.tags,
+          folderPathId: data.note.folder_path_id,
+        }, serverUpdatedAt);
+
+        console.log('[SYNC] New draft created and saved to IndexedDB:', {
+          noteId: newNote.id,
+          serverUpdatedAt,
+        });
+
         // Update URL with new note ID
         router.replace(`/editor?id=${data.note.id}`);
       }
-    } catch (error) {
-      console.error('Failed to create draft:', error);
-      toast.error('ドラフトの作成に失敗しました');
+    } catch (error: any) {
+      console.error('[SYNC] createNewDraft exception:', {
+        message: error.message,
+        stack: error.stack?.substring(0, 300),
+      });
+      // Toast already shown in response handling above, only show if not already shown
+      if (!error.message?.includes('Failed to create draft')) {
+        toast.error('ドラフトの作成に失敗しました');
+      }
     } finally {
       isCreatingDraft.current = false;
     }
@@ -486,95 +532,66 @@ export default function EditorContent() {
         const serverContent = data.content || data.note.content || "";
         const serverUpdatedAt = new Date(data.note.updated_at || 0).getTime();
 
-        // Simplified content-based sync logic:
-        // 1. If content is the same → use server (update syncedAt)
-        // 2. If content differs AND server is newer → show conflict UI
-        // 3. If content differs AND server is NOT newer → use local
+        // Simplified sync logic (no conflict modal on load):
+        // - If local has unsynced changes (updatedAt > syncedAt), use local
+        // - Otherwise, use server content
+        // This eliminates conflict modal on every editor open
 
         let useLocal = false;
-        let showConflict = false;
 
         if (localNote) {
-          const cacheIsStale = localNote.syncedAt < serverUpdatedAt;
-          const contentDiffers = localNote.content !== serverContent;
+          const hasLocalChanges = localNote.updatedAt > localNote.syncedAt;
 
-          // Debug logging
           console.log('[SYNC] loadNote decision:', {
             noteId: id,
+            localUpdatedAt: localNote.updatedAt,
             localSyncedAt: localNote.syncedAt,
             serverUpdatedAt,
-            cacheIsStale,
-            contentDiffers,
-            localContentPreview: localNote.content?.substring(0, 50),
-            serverContentPreview: serverContent?.substring(0, 50),
+            hasLocalChanges,
           });
 
-          if (!contentDiffers) {
-            // Content is the same - use server version
-            // syncedAt will be updated via saveSyncedNote below
-            console.log('[SYNC] Decision: Use server (content identical)');
-            useLocal = false;
-          } else if (cacheIsStale) {
-            // Server was updated AND content differs = conflict
-            console.log('[SYNC] Decision: Conflict detected');
-            showConflict = true;
-            // Store remote content for conflict UI
-            setRemoteContent(serverContent);
-          } else {
-            // Server is NOT newer, but content differs = local has unsaved changes
-            console.log('[SYNC] Decision: Use local (local changes pending)');
+          if (hasLocalChanges) {
+            // Local has unsaved changes - use local content
+            console.log('[SYNC] Decision: Use local (has unsynced changes)');
             useLocal = true;
+          } else {
+            // No local changes - use server content (most recent)
+            console.log('[SYNC] Decision: Use server (no local changes)');
+            useLocal = false;
           }
         } else {
           console.log('[SYNC] No local note found, using server');
         }
 
-        if (showConflict) {
-          // Show conflict modal - let user choose
-          setNote({
-            id: data.note.id,
-            title: localNote!.title,
-            content: localNote!.content,
-            tags: localNote!.tags,
-          });
-          setSelectedFolderId(data.note.folder_path_id);
-          initialFolderIdRef.current = data.note.folder_path_id;
-          setSyncStatus("conflict");
-          setShowConflictModal(true);
-          hasUnsyncedChanges.current = true;
-        } else {
-          const finalTitle = useLocal && localNote ? localNote.title : data.note.title;
-          const finalContent = useLocal && localNote ? localNote.content : serverContent;
-          const finalTags = useLocal && localNote ? localNote.tags : (data.note.tags || []);
+        const finalTitle = useLocal && localNote ? localNote.title : data.note.title;
+        const finalContent = useLocal && localNote ? localNote.content : serverContent;
+        const finalTags = useLocal && localNote ? localNote.tags : (data.note.tags || []);
 
-          setNote({
+        setNote({
+          id: data.note.id,
+          title: finalTitle,
+          content: finalContent,
+          tags: finalTags,
+        });
+        setSelectedFolderId(data.note.folder_path_id);
+        initialFolderIdRef.current = data.note.folder_path_id;
+        setSyncStatus(useLocal ? "idle" : "synced");
+
+        // Always update IndexedDB with current state
+        if (useLocal) {
+          // Keep local changes, mark as unsynced
+          hasUnsyncedChanges.current = true;
+          toast.info("ローカルの変更を復元しました");
+        } else {
+          // Save server content to IndexedDB (prevents false conflict detection)
+          await saveSyncedNote({
             id: data.note.id,
             title: finalTitle,
             content: finalContent,
             tags: finalTags,
-          });
-          setSelectedFolderId(data.note.folder_path_id);
-          initialFolderIdRef.current = data.note.folder_path_id;
-          setSyncStatus(useLocal ? "idle" : "synced");
-
-          // CRITICAL: Always save to IndexedDB when using server content
-          // Use saveSyncedNote to set both updatedAt and syncedAt to server timestamp
-          // This prevents false "local changes" detection on subsequent loads
-          if (!useLocal) {
-            await saveSyncedNote({
-              id: data.note.id,
-              title: finalTitle,
-              content: finalContent,
-              tags: finalTags,
-              folderPathId: data.note.folder_path_id,
-            }, serverUpdatedAt);
-            console.log('[SYNC] Saved server content to IndexedDB with syncedAt:', serverUpdatedAt);
-          }
-
-          if (useLocal && localNote) {
-            hasUnsyncedChanges.current = true;
-            toast.info("ローカルの変更を復元しました");
-          }
+            folderPathId: data.note.folder_path_id,
+          }, serverUpdatedAt);
+          console.log('[SYNC] Saved server content to IndexedDB with syncedAt:', serverUpdatedAt);
         }
       } else {
         // Note not found (may have been deleted)
@@ -596,7 +613,16 @@ export default function EditorContent() {
 
   // Save to IndexedDB with 1 second debounce
   const saveToLocal = useCallback(async () => {
-    if (!note.id) return;
+    if (!note.id) {
+      console.log('[SYNC] saveToLocal: Skipped - no note.id');
+      return;
+    }
+
+    console.log('[SYNC] saveToLocal: Saving to IndexedDB...', {
+      noteId: note.id,
+      titleLength: note.title?.length || 0,
+      contentLength: note.content?.length || 0,
+    });
 
     try {
       // Don't pass syncedAt - let saveLocalNote preserve existing value
@@ -607,6 +633,7 @@ export default function EditorContent() {
         tags: note.tags,
         folderPathId: selectedFolderId,
       });
+      console.log('[SYNC] saveToLocal: Success');
     } catch (error) {
       console.error("Failed to save to IndexedDB:", error);
     }
@@ -614,7 +641,16 @@ export default function EditorContent() {
 
   // Save to Supabase with 3 second debounce (with optimistic locking)
   const saveToCloud = useCallback(async () => {
-    if (!note.id || !isOnline) return;
+    if (!note.id || !isOnline) {
+      console.log('[SYNC] saveToCloud: Skipped', { noteId: note.id, isOnline });
+      return;
+    }
+
+    console.log('[SYNC] saveToCloud: Saving to Supabase...', {
+      noteId: note.id,
+      titleLength: note.title?.length || 0,
+      contentLength: note.content?.length || 0,
+    });
 
     try {
       // Get current syncedAt for optimistic locking
@@ -651,6 +687,7 @@ export default function EditorContent() {
         // Use server's updated_at to track which version we've synced to
         const serverUpdatedAt = new Date(data.note?.updated_at || Date.now()).getTime();
         await markNoteSynced(note.id, serverUpdatedAt);
+        console.log('[SYNC] saveToCloud: Success', { serverUpdatedAt });
 
         // Notify other tabs of the save
         broadcastChannelRef.current?.postMessage({
@@ -659,9 +696,11 @@ export default function EditorContent() {
           tabId: tabIdRef.current,
           content: note.content,
         });
+      } else {
+        console.error('[SYNC] saveToCloud: Failed with status', response.status);
       }
     } catch (error) {
-      console.error("Failed to save to cloud:", error);
+      console.error("[SYNC] saveToCloud: Error:", error);
     }
   }, [note, isOnline]);
 
@@ -701,7 +740,15 @@ export default function EditorContent() {
 
   // Sync to Git function
   const syncToGit = useCallback(async () => {
+    console.log('[SYNC] syncToGit called:', {
+      noteId: note.id,
+      title: note.title,
+      contentLength: note.content?.length || 0,
+      isOnline,
+    });
+
     if (!note.id || !note.title) {
+      console.log('[SYNC] syncToGit: Skipped - missing id or title');
       if (!note.title) {
         toast.error("タイトルを入力してください");
       }
@@ -735,20 +782,50 @@ export default function EditorContent() {
       }
 
       if (!response.ok) {
-        throw new Error("Failed to sync");
+        const errorData = await response.json().catch(() => ({}));
+        console.error('[SYNC] syncToGit failed:', {
+          status: response.status,
+          statusText: response.statusText,
+          error: errorData.error,
+          details: errorData.details,
+          code: errorData.code,
+        });
+
+        // Show specific error message based on error code
+        let errorMessage = "同期に失敗しました";
+        if (errorData.code === 'REPO_NOT_FOUND') {
+          errorMessage = "リポジトリが見つかりません。再接続してください。";
+        } else if (errorData.code === 'PERMISSION_DENIED') {
+          errorMessage = "権限がありません。GitHub Appの設定を確認してください。";
+        } else if (errorData.code === 'GITHUB_API_ERROR') {
+          errorMessage = `GitHub APIエラー: ${errorData.details || '不明なエラー'}`;
+        } else if (errorData.details) {
+          errorMessage = `同期に失敗しました: ${errorData.details}`;
+        }
+
+        setSyncStatus("error");
+        toast.error(errorMessage);
+        return;
       }
 
       const data = await response.json();
+      console.log('[SYNC] syncToGit success:', {
+        noteId: note.id,
+        status: data.status,
+      });
       hasUnsyncedChanges.current = false;
       setSyncStatus("synced");
       // Use server's updated_at to track which version we've synced to
       const serverUpdatedAt = new Date(data.note?.updated_at || Date.now()).getTime();
       await markNoteSynced(note.id, serverUpdatedAt);
       toast.success("同期しました");
-    } catch (error) {
-      console.error("Error syncing to Git:", error);
+    } catch (error: any) {
+      console.error("[SYNC] syncToGit exception:", {
+        message: error.message,
+        stack: error.stack?.substring(0, 300),
+      });
       setSyncStatus("error");
-      toast.error("同期に失敗しました");
+      toast.error(`同期に失敗しました: ${error.message || '不明なエラー'}`);
     } finally {
       setSyncing(false);
     }
@@ -1020,7 +1097,7 @@ export default function EditorContent() {
           {/* Center: Sync status */}
           <div className="flex items-center gap-3">
             <SyncStatusDisplay status={syncStatus} lastSaved={lastSaved} />
-            <span className="text-[10px] text-muted-foreground/50">v0.2.3</span>
+            <span className="text-[10px] text-muted-foreground/50">v0.4.0</span>
             {!isOnline && (
               <span className="text-xs text-warning font-medium px-2 py-0.5 bg-warning/10 rounded-full">オフライン</span>
             )}

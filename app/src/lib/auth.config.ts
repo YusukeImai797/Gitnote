@@ -7,6 +7,14 @@ export const authOptions: AuthOptions = {
     GitHubProvider({
       clientId: process.env.GITHUB_OAUTH_CLIENT_ID ?? "",
       clientSecret: process.env.GITHUB_OAUTH_CLIENT_SECRET ?? "",
+      authorization: {
+        params: {
+          // Required scopes for repository access:
+          // - repo: Full control of private repositories (read/write)
+          // - read:user: Read user profile data
+          scope: "repo read:user",
+        },
+      },
     }),
   ],
   session: { strategy: "jwt" },
@@ -27,10 +35,9 @@ export const authOptions: AuthOptions = {
         const { data, error } = await supabase
           .from('users')
           .upsert({
-            github_user_id: parseInt(account.providerAccountId),
+            github_user_id: parseInt(account.providerAccountId, 10),
             email: user.email,
             name: user.name,
-            avatar_url: user.image,
           }, {
             onConflict: 'github_user_id'
           })
@@ -62,7 +69,6 @@ export const authOptions: AuthOptions = {
     },
     async session({ session, token }) {
       if (session.user) {
-        // @ts-ignore
         session.accessToken = token.accessToken;
       }
       return session;
