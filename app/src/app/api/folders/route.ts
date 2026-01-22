@@ -196,10 +196,8 @@ async function scanRepositoryPaths(repoConnection: { github_installation_id: num
                 if (item.path.includes('notes') || item.path.includes('Notes')) {
                     paths.add(item.path + '/');
                 }
-                // Add top-level folders with /notes/ suffix
-                if (!item.path.includes('/')) {
-                    paths.add(item.path + '/notes/');
-                }
+                // Removed automatic /notes/ suffix addition to top-level folders
+                // This was causing non-existent paths like 'api/notes/' to appear
             }
         }
 
