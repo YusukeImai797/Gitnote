@@ -45,38 +45,89 @@ export const authOptions: AuthOptions = {
       try {
         const supabase = getServiceSupabase();
 
-        console.log('[AUTH] Attempting to upsert user:', {
-          provider: 'github',
-          provider_id: account.providerAccountId,
-          email: email,
-          name: user.name,
-        });
-
-        // Upsert user to database
-        const { data, error } = await supabase
+        // 1. Check if user exists by provider_id
+        const { data: users, error: searchError } = await supabase
           .from('users')
-          .upsert({
-            provider: 'github',
-            provider_id: account.providerAccountId,
-            email: email,
-            name: user.name,
-          }, {
-            onConflict: 'email'
-          })
-          .select();
+          .select('id, email')
+          .eq('provider_id', account.providerAccountId)
+          .eq('provider', 'github')
+          .limit(1);
 
-        if (error) {
-          console.error('[AUTH] Error upserting user:', {
-            error,
-            message: error.message,
-            details: error.details,
-            hint: error.hint,
-            code: error.code,
-          });
+        if (searchError) {
+          console.error('[AUTH] Error searching user:', searchError);
           return false;
         }
 
-        console.log('[AUTH] User upserted successfully:', data);
+        const existingUser = users?.[0];
+
+        if (existingUser) {
+          // 2. User exists - update details
+          console.log('[AUTH] User exists, updating:', existingUser.id);
+
+          const { error: updateError } = await supabase
+            .from('users')
+            .update({
+              email: email, // Update email if changed
+              name: user.name,
+              // updated_at is handled by DB trigger
+            })
+            .eq('id', existingUser.id);
+
+          if (updateError) {
+            console.error('[AUTH] Error updating user:', updateError);
+            return false;
+          }
+        } else {
+          // 3. User does not exist by provider_id - check by email to link accounts
+          const { data: emailUsers, error: emailSearchError } = await supabase
+            .from('users')
+            .select('id')
+            .eq('email', email)
+            .limit(1);
+
+          if (emailSearchError) {
+            console.error('[AUTH] Error searching user by email:', emailSearchError);
+            return false;
+          }
+
+          const emailUser = emailUsers?.[0];
+
+          if (emailUser) {
+            // Link existing email user to this provider
+            console.log('[AUTH] Linking existing email user:', emailUser.id);
+            const { error: linkError } = await supabase
+              .from('users')
+              .update({
+                provider: 'github',
+                provider_id: account.providerAccountId,
+                name: user.name,
+              })
+              .eq('id', emailUser.id);
+
+            if (linkError) {
+              console.error('[AUTH] Error linking user:', linkError);
+              return false;
+            }
+          } else {
+            // 4. Create new user
+            console.log('[AUTH] Creating new user');
+            const { error: insertError } = await supabase
+              .from('users')
+              .insert({
+                provider: 'github',
+                provider_id: account.providerAccountId,
+                email: email,
+                name: user.name
+              });
+
+            if (insertError) {
+              console.error('[AUTH] Error inserting user:', insertError);
+              return false;
+            }
+          }
+        }
+
+        console.log('[AUTH] User authenticated successfully');
         return true;
       } catch (error) {
         console.error('[AUTH] Unexpected error in signIn callback:', error);
