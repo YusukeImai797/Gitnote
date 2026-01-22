@@ -3,6 +3,7 @@ import GitHubProvider from "next-auth/providers/github";
 import { getServiceSupabase } from "@/lib/supabase";
 
 export const authOptions: AuthOptions = {
+  debug: true,
   providers: [
     GitHubProvider({
       clientId: process.env.GITHUB_OAUTH_CLIENT_ID ?? "",
@@ -61,15 +62,15 @@ export const authOptions: AuthOptions = {
         const existingUser = users?.[0];
 
         if (existingUser) {
-          // 2. User exists - update details
+          // 2. User exists - update details (only name, not email to avoid conflicts)
           console.log('[AUTH] User exists, updating:', existingUser.id);
 
           const { error: updateError } = await supabase
             .from('users')
             .update({
-              email: email, // Update email if changed
               name: user.name,
-              // updated_at is handled by DB trigger
+              // Note: Don't update email here to avoid UNIQUE constraint errors
+              // if another user already has that email
             })
             .eq('id', existingUser.id);
 
