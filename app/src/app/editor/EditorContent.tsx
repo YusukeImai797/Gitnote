@@ -139,10 +139,30 @@ export default function EditorContent() {
       if (type === 'NOTE_SAVED' && noteId === note.id) {
         // Another tab saved this note - check if we need to update
         const localContent = note.content;
-        if (content !== localContent && !hasUnsyncedChanges.current) {
-          // Update our content to match
-          setNote(prev => ({ ...prev, content }));
-          toast.info("別のタブからの変更を反映しました");
+        const { serverUpdatedAt, title: savedTitle, tags: savedTags } = event.data;
+
+        if (!hasUnsyncedChanges.current) {
+          // No local changes - safely update to match the other tab
+          if (content !== localContent || savedTitle !== note.title) {
+            setNote(prev => ({
+              ...prev,
+              content: content || prev.content,
+              title: savedTitle || prev.title,
+              tags: savedTags || prev.tags,
+            }));
+            toast.info("別のタブからの変更を反映しました");
+          }
+          // IMPORTANT: Update IndexedDB syncedAt to match server timestamp
+          // This prevents false "local changes" detection
+          if (serverUpdatedAt) {
+            saveSyncedNote({
+              id: noteId,
+              title: savedTitle || note.title,
+              content: content || note.content,
+              tags: savedTags || note.tags,
+              folderPathId: selectedFolderId,
+            }, serverUpdatedAt).catch(console.error);
+          }
         }
       }
     };
@@ -689,12 +709,15 @@ export default function EditorContent() {
         await markNoteSynced(note.id, serverUpdatedAt);
         console.log('[SYNC] saveToCloud: Success', { serverUpdatedAt });
 
-        // Notify other tabs of the save
+        // Notify other tabs of the save (include all data for proper sync)
         broadcastChannelRef.current?.postMessage({
           type: 'NOTE_SAVED',
           noteId: note.id,
           tabId: tabIdRef.current,
           content: note.content,
+          title: note.title,
+          tags: note.tags,
+          serverUpdatedAt,
         });
       } else {
         console.error('[SYNC] saveToCloud: Failed with status', response.status);

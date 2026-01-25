@@ -122,18 +122,33 @@ export async function PUT(
     // If saveToDbOnly, just update the database without GitHub commit
     if (saveToDbOnly) {
       // Optimistic locking: check if server was updated since client's last sync
+      // Use a tolerance window to handle network delays and clock differences
+      const TIMESTAMP_TOLERANCE_MS = 5000; // 5 seconds tolerance
+
       if (expected_updated_at) {
         const currentServerUpdatedAt = new Date(note.updated_at || 0).getTime();
-        if (currentServerUpdatedAt > expected_updated_at) {
-          console.log('[SYNC] Optimistic lock conflict:', {
+        // Only conflict if server is significantly newer (beyond tolerance window)
+        // This prevents false conflicts from network delays or same-device saves
+        if (currentServerUpdatedAt > expected_updated_at + TIMESTAMP_TOLERANCE_MS) {
+          console.log('[SYNC] Optimistic lock conflict (beyond tolerance):', {
             expected: expected_updated_at,
             actual: currentServerUpdatedAt,
+            tolerance: TIMESTAMP_TOLERANCE_MS,
+            diff: currentServerUpdatedAt - expected_updated_at,
           });
           return NextResponse.json({
             error: 'Conflict detected',
             status: 'conflict',
             serverNote: note,
           }, { status: 409 });
+        }
+        // Log if within tolerance (helpful for debugging)
+        if (currentServerUpdatedAt > expected_updated_at) {
+          console.log('[SYNC] Timestamp diff within tolerance, allowing save:', {
+            expected: expected_updated_at,
+            actual: currentServerUpdatedAt,
+            diff: currentServerUpdatedAt - expected_updated_at,
+          });
         }
       }
 
@@ -192,18 +207,35 @@ export async function PUT(
       note.path = filePath;
     }
 
+    // Helper to normalize content for comparison (removes trailing whitespace, normalizes line endings)
+    const normalizeContent = (c: string) =>
+      c.replace(/\r\n/g, '\n').replace(/[ \t]+$/gm, '').trim();
+
+    // Helper to extract body without front matter
+    const extractBody = (c: string) =>
+      c.replace(/^---\n[\s\S]*?\n---\n\n?/, '').trim();
+
+    // Determine if we need to update updated_at in front matter
+    // Only update if actual content (title, body, tags) has changed
+    let frontMatterUpdatedAt = note.updated_at || new Date().toISOString();
+
+    // We'll check against remote content later if available, for now use note's timestamp
+    let shouldUpdateTimestamp = false;
+
     // Update markdown with front matter
-    const frontMatter = [
+    const buildFrontMatter = (updatedAtValue: string) => [
       '---',
       `title: "${title || note.title}"`,
       `tags: [${tags.map((t: string) => `"${t}"`).join(', ')}]`,
       `created_at: "${note.created_at}"`,
-      `updated_at: "${new Date().toISOString()}"`,
+      `updated_at: "${updatedAtValue}"`,
       '---',
       '',
     ].join('\n');
 
-    const fullContent = frontMatter + content;
+    // Initial front matter with existing timestamp (may be updated later)
+    let frontMatter = buildFrontMatter(frontMatterUpdatedAt);
+    let fullContent = frontMatter + content;
 
     // Update on GitHub using user's OAuth token
     const octokit = getOctokitForUser(accessToken);
@@ -235,60 +267,82 @@ export async function PUT(
           shaMatch: sha === currentSha,
         });
 
+        // Extract front matter fields for comparison
+        const extractTitle = (c: string) => {
+          const match = c.match(/title: "([^"]*)"/);
+          return match ? match[1] : '';
+        };
+        const extractTags = (c: string) => {
+          const match = c.match(/tags: \[([^\]]*)\]/);
+          return match ? match[1] : '';
+        };
+        const extractUpdatedAt = (c: string) => {
+          const match = c.match(/updated_at: "([^"]*)"/);
+          return match ? match[1] : '';
+        };
+
+        // Compare actual content with normalization (handle CRLF/LF differences)
+        const remoteBody = normalizeContent(extractBody(remoteContent));
+        const localBody = normalizeContent(extractBody(fullContent));
+        const remoteTitle = extractTitle(remoteContent);
+        const localTitle = extractTitle(fullContent);
+        const remoteTags = extractTags(remoteContent);
+        const localTags = extractTags(fullContent);
+        const remoteUpdatedAt = extractUpdatedAt(remoteContent);
+
+        const bodyMatch = remoteBody === localBody;
+        const titleMatch = remoteTitle === localTitle;
+        const tagsMatch = remoteTags === localTags;
+        const contentActuallyChanged = !bodyMatch || !titleMatch || !tagsMatch;
+
+        console.log('[SYNC] Content comparison:', {
+          bodyMatch,
+          titleMatch,
+          tagsMatch,
+          contentActuallyChanged,
+          remoteBodyPreview: remoteBody.substring(0, 80) + (remoteBody.length > 80 ? '...' : ''),
+          localBodyPreview: localBody.substring(0, 80) + (localBody.length > 80 ? '...' : ''),
+        });
+
         // If local sha doesn't match remote sha, we may have a conflict
         if (sha && sha !== currentSha) {
-          console.log('[SYNC] SHA mismatch detected, comparing content...');
+          console.log('[SYNC] SHA mismatch detected');
 
-          // Extract and compare the actual content (body without front matter)
-          const extractBody = (c: string) =>
-            c.replace(/^---\n[\s\S]*?\n---\n\n?/, '').trim();
-
-          const remoteBody = extractBody(remoteContent);
-          const localBody = extractBody(fullContent);
-
-          // Extract front matter fields for comparison
-          const extractTitle = (c: string) => {
-            const match = c.match(/title: "([^"]*)"/);
-            return match ? match[1] : '';
-          };
-          const extractTags = (c: string) => {
-            const match = c.match(/tags: \[([^\]]*)\]/);
-            return match ? match[1] : '';
-          };
-
-          const remoteTitle = extractTitle(remoteContent);
-          const localTitle = extractTitle(fullContent);
-          const remoteTags = extractTags(remoteContent);
-          const localTags = extractTags(fullContent);
-
-          const bodyMatch = remoteBody === localBody;
-          const titleMatch = remoteTitle === localTitle;
-          const tagsMatch = remoteTags === localTags;
-
-          console.log('[SYNC] Content comparison:', {
-            bodyMatch,
-            titleMatch,
-            tagsMatch,
-            remoteBodyPreview: remoteBody.substring(0, 80) + (remoteBody.length > 80 ? '...' : ''),
-            localBodyPreview: localBody.substring(0, 80) + (localBody.length > 80 ? '...' : ''),
-          });
-
-          // If all meaningful content is the same, no conflict
-          if (bodyMatch && titleMatch && tagsMatch) {
-            console.log('[SYNC] Content identical, updating SHA without conflict');
+          // If all meaningful content is the same, no conflict - just use current SHA
+          if (!contentActuallyChanged) {
+            console.log('[SYNC] Content identical despite SHA mismatch - no actual conflict');
+            // Preserve remote's updated_at to avoid unnecessary SHA changes
+            frontMatterUpdatedAt = remoteUpdatedAt || frontMatterUpdatedAt;
+            frontMatter = buildFrontMatter(frontMatterUpdatedAt);
+            fullContent = frontMatter + content;
             sha = currentSha;
           } else {
             // Actual content conflict
             console.log('[SYNC] Content differs, returning conflict response');
             return NextResponse.json({
               error: 'Conflict detected',
-              remoteContent: remoteBody,
+              remoteContent: extractBody(remoteContent),
               status: 'conflict'
             }, { status: 409 });
           }
         } else {
-          console.log('[SYNC] SHA matches or no previous SHA, proceeding with update');
+          console.log('[SYNC] SHA matches or no previous SHA');
           sha = currentSha;
+
+          // Only update timestamp if content actually changed
+          if (contentActuallyChanged) {
+            console.log('[SYNC] Content changed, updating timestamp');
+            frontMatterUpdatedAt = new Date().toISOString();
+            frontMatter = buildFrontMatter(frontMatterUpdatedAt);
+            fullContent = frontMatter + content;
+            shouldUpdateTimestamp = true;
+          } else {
+            // Preserve existing timestamp to avoid SHA churn
+            console.log('[SYNC] Content unchanged, preserving timestamp');
+            frontMatterUpdatedAt = remoteUpdatedAt || frontMatterUpdatedAt;
+            frontMatter = buildFrontMatter(frontMatterUpdatedAt);
+            fullContent = frontMatter + content;
+          }
         }
       }
     } catch (error: any) {
